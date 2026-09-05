@@ -107,6 +107,42 @@ Handles ingestion of completed runs from the mobile frontend.
 Dynamic challenges.
 * **Models:** `Quest` (system-wide definitions) and `UserQuest` (per-user progress).
 
+### 5. RAG Module (`app/modules/rag`) — Phases 4C.1 + 4C.2
+The retrieval side of LLM-grounded coaching (SRS §13). Read
+[`app/modules/rag/README.md`](app/modules/rag/README.md) before touching it.
+* **Models:** `RagDocument`, `RagChunk` (pgvector `vector(1536)` embedding
+  column; migration `0003`), unique `(document_id, chunk_index)`.
+* **Services:** deterministic chunking (`chunking.py`), a REAL Gemini
+  embedding provider (`providers.py`, REST via httpx — enabled by
+  `GEMINI_API_KEY`, width-validated, no fake fallback), idempotent document
+  ingestion, and cosine-similarity retrieval with a minimum-similarity
+  threshold, source/metadata filters, and `top_k`.
+* **Corpus + ingestion:** small curated fitness corpus (WHO/CDC-sourced
+  general guidance) in `corpus.py`; repeatable CLI
+  `python -m app.modules.rag.ingestion` (real embeddings, never run by
+  tests).
+* **Endpoints:** `POST /rag/retrieve` (caller supplies the query embedding)
+  and `GET /rag/documents` (read-only listing). **No ingestion endpoint** —
+  auth is deferred, so ingestion stays CLI/service-level.
+
+### 6. Coach Module (`app/modules/coach`) — Phase 4C.2
+Grounded AI coaching (SRS §13/§14). Read
+[`app/modules/coach/README.md`](app/modules/coach/README.md) first.
+* **Providers:** `GeminiLLMProvider` (REST, configurable model, typed
+  timeout/error handling) behind the `LLMProvider` protocol — ONE key
+  (`GEMINI_API_KEY`) serves both embeddings and the LLM.
+* **Flow:** real Phase 4A `FitnessContext` → unchanged rules engine →
+  topical query → embedding → thresholded pgvector retrieval → grounded
+  prompt (context / knowledge / instructions, synthesize-don't-echo) →
+  LLM → validated `CoachResponse`. The recommendation engine remains the
+  authority; the LLM is the explanation layer.
+* **Endpoint:** `GET /api/v1/coach` (dev user) with honest error mapping
+  (503 unconfigured, 504 timeout, 502 upstream/malformed). Ungrounded
+  responses (retrieval empty) are flagged `"grounded": false` — never
+  presented as RAG-grounded (SRS §13.4).
+* **Honesty note:** requires `GEMINI_API_KEY` to produce real output; the
+  automated tests mock every provider boundary (zero API credits).
+
 ## 🗄 Migrations
 
 The schema lives in `alembic/versions/` and is reproducible from code:

@@ -10,6 +10,7 @@ from app.modules.users.models import Friendship, User  # noqa: F401
 from app.modules.map.models import HexOwnership  # noqa: F401
 from app.modules.runs.models import CapturedHex, RunSession, UserDailyActivity  # noqa: F401
 from app.modules.quests.models import Quest, UserQuest  # noqa: F401
+from app.modules.rag.models import RagChunk, RagDocument  # noqa: F401
 
 from sqlmodel import SQLModel
 
