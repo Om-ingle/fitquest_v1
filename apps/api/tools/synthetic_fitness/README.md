@@ -41,13 +41,20 @@ be combined and separated cleanly.
 tools/synthetic_fitness/
 ├── generator.py                  # simulator (library API + CLI)
 ├── features.py                   # Phase 4B.2 feature engineering (library + CLI)
+├── target.py                     # Phase 4B.3 ML target definition + analysis CLI
+├── target_design.md              # Phase 4B.3 target-design report
+├── xgboost_experiment.py         # Phase 4B.4 first XGBoost experiment (needs xgboost)
+├── xgboost_experiment.md         # Phase 4B.4 experiment report (read this first)
 ├── test_synthetic_generator.py   # simulator tests (pure Python, no DB)
 ├── test_feature_engineering.py   # feature-pipeline tests (pure Python, no DB)
+├── test_target_design.py         # target-design tests (pure Python, no DB)
+├── test_xgboost_experiment.py    # experiment tests (skip if xgboost absent)
 ├── README.md                     # this file
 └── output/
     ├── synthetic_fitness_dataset.csv             # raw synthetic dataset (git-ignored)
     ├── synthetic_fitness_features.csv            # ML-ready features (git-ignored)
-    └── synthetic_fitness_features_manifest.json  # feature manifest (git-ignored)
+    ├── synthetic_fitness_features_manifest.json  # feature manifest (git-ignored)
+    └── xgboost_experiment_results.json           # experiment results (git-ignored)
 ```
 
 ## The profiles
@@ -187,8 +194,12 @@ Raw dataset                        Feature engineering                 ML-ready 
  30 users × 180 days = 5,400        rolling/expanding windows)            5,400 rows × 21 features
  daily rows                                                                + manifest JSON)
         ↓                                  ↓                                  ↓
-                        Phase 4B.3 model experiment (target + training
-                        strategy — deliberately NOT decided yet)
+                        Phase 4B.3 target design (inactive_next_3d — see
+                        target_design.md; target/label NOT in the features)
+                                 ↓
+                        Phase 4B.4 first XGBoost experiment (done — see
+                        xgboost_experiment.md; SYNTHETIC pipeline validation
+                        only, criterion PASSED on synthetic data)
 ```
 
 ⚠ **These features are generated from SYNTHETIC data.** Feature engineering
@@ -197,10 +208,13 @@ real-world predictive performance of any kind. Real FitQuest telemetry will
 eventually replace/augment the synthetic dataset and flow through the same
 code under a different `data_source` label.
 
-**No ML target is defined.** In particular, rows are *not* labeled with the
-rules engine's outcomes (STARTER / RECOVERY / DEFENSE / PROGRESS / MAINTAIN)
-— using those as ground truth would mostly teach a model to replay the
-existing rules. Phase 4B.3 decides the learning target separately.
+**No ML target column exists in the features CSV.** Phase 4B.3 separately
+designed the first experiment's target — `inactive_next_3d` (≥ 2 of the next
+3 days below the 1,000-step bar; a *future-behavior* label, deliberately NOT
+the rules engine's recommendation output, which would make the experiment
+circular). The full rationale, horizon, splits, baselines, and metrics are in
+[`target_design.md`](target_design.md); the executable definition is
+`target.py`. Phase 4B.4 will train the first model.
 
 ### Leakage policy
 
