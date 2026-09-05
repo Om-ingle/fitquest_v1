@@ -1,5 +1,6 @@
 package com.example.mobileapp.core.network
 
+import com.example.mobileapp.core.network.models.DailyActivitySnapshot
 import com.example.mobileapp.core.network.models.RunSyncPayload
 import com.example.mobileapp.core.network.models.RunSyncSummary
 import retrofit2.HttpException
@@ -14,6 +15,10 @@ import java.io.IOException
  * The backend is the single authority for competitive game state (XP,
  * hex ownership). The app keeps its own provisional estimate only until a
  * successful sync replaces it.
+ *
+ * The optional [DailyActivitySnapshot] (Phase 4B.5 telemetry) rides the same
+ * request — one network path, one failure mapping. Its absence (null) keeps
+ * the legacy payload byte-compatible with older clients.
  */
 class RunSyncer(private val api: FitQuestApi) {
 
@@ -25,12 +30,14 @@ class RunSyncer(private val api: FitQuestApi) {
 
     suspend fun syncRun(
         totalSessionSteps: Int,
-        hexesToSteps: Map<String, Int>
+        hexesToSteps: Map<String, Int>,
+        dailyActivity: DailyActivitySnapshot? = null
     ): SyncOutcome = try {
         val summary = api.syncRunSession(
             RunSyncPayload(
                 total_session_steps = totalSessionSteps,
-                hexes_to_steps = hexesToSteps
+                hexes_to_steps = hexesToSteps,
+                daily_activity = dailyActivity
             )
         )
         SyncOutcome.Success(summary)

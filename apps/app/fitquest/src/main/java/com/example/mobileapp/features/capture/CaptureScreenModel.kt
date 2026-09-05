@@ -14,6 +14,7 @@ import com.example.mobileapp.core.network.MapTerritoryFetcher
 import com.example.mobileapp.core.network.RunSyncer
 import com.example.mobileapp.core.network.ViewportBounds
 import com.example.mobileapp.core.network.ViewportChangeDetector
+import com.example.mobileapp.core.telemetry.DailyActivitySnapshotBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -141,6 +142,11 @@ class CaptureScreenModel(
 
             hexCaptureEngine.stopTracking()
 
+            // End-of-day territory count for the telemetry snapshot: this
+            // run's captures plus the persisted Room mirror.
+            val hexesOwnedEndOfDay =
+                (capturedHexes + state.historicalCapturedHexes).distinct().size
+
             // The backend is the authority for competitive XP (50/new hex,
             // 10/defended, 100/stolen — see the FastAPI run-sync service).
             // This local formula is only a PROVISIONAL estimate shown when
@@ -166,12 +172,23 @@ class CaptureScreenModel(
                 // backend is unreachable (offline Room gameplay preserved).
                 runSessionRepository.saveSession(session)
 
+                // Phase 4B.5 telemetry: aggregate the run's device-local day
+                // from Room (the just-saved session included) into an
+                // absolute snapshot that rides the same sync request.
+                val dayWindow = DailyActivitySnapshotBuilder.localDayWindow(session.startedAt)
+                val dailyActivity = DailyActivitySnapshotBuilder.build(
+                    sessions = runSessionRepository.getSessionsBetween(dayWindow.first, dayWindow.second),
+                    goalSteps = userProfileRepository.getProfile().dailyStepGoal,
+                    hexesOwned = hexesOwnedEndOfDay,
+                    forTimestampMillis = session.startedAt
+                )
+
                 // Then attempt the backend sync: run -> DTO -> FastAPI ->
                 // Supabase -> authoritative summary -> local reconciliation.
                 val hexesToSteps = finalStepsMap.filterValues { it >= captureThresholdSteps }
                 var finalSession = session
                 var syncSummary: com.example.mobileapp.core.network.models.RunSyncSummary? = null
-                when (val outcome = runSyncer.syncRun(totalSteps, hexesToSteps)) {
+                when (val outcome = runSyncer.syncRun(totalSteps, hexesToSteps, dailyActivity)) {
                     is RunSyncer.SyncOutcome.Success -> {
                         val authoritativeXp = outcome.summary.xp_earned
                         runSessionRepository.markSynced(session.id, authoritativeXp)

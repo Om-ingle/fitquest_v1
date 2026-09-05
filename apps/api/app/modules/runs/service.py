@@ -1,10 +1,55 @@
+import datetime
 import uuid
 from sqlmodel import Session, select
 
-from app.modules.runs.models import CapturedHex, RunSession
-from app.modules.runs.schemas import RunSyncPayload, RunSyncSummary
+from app.modules.runs.models import CapturedHex, RunSession, UserDailyActivity
+from app.modules.runs.schemas import DailyActivitySnapshot, RunSyncPayload, RunSyncSummary
 from app.modules.map.models import HexOwnership
 from app.modules.users.models import User
+
+
+def upsert_daily_activity(
+    db: Session,
+    current_user_id: uuid.UUID,
+    snapshot: DailyActivitySnapshot,
+) -> UserDailyActivity:
+    """Merge-upsert the user's daily telemetry snapshot (Phase 4B.5).
+
+    The snapshot carries absolute day-to-date values, so re-sending the same
+    snapshot is idempotent (same row, same values). Non-null incoming fields
+    replace the stored ones; null fields keep the stored ones, which makes
+    partial updates safe and late corrections deterministic per field.
+    """
+    existing = db.get(UserDailyActivity, (current_user_id, snapshot.activity_date))
+    if existing is None:
+        row = UserDailyActivity(
+            user_id=current_user_id,
+            activity_date=snapshot.activity_date,
+            steps=snapshot.steps,
+            active_minutes=snapshot.active_minutes,
+            updated_at=datetime.datetime.now(datetime.timezone.utc),
+        )
+    else:
+        row = existing
+        row.steps = snapshot.steps
+        row.active_minutes = snapshot.active_minutes
+        row.updated_at = datetime.datetime.now(datetime.timezone.utc)
+
+    # Optional fields: None means "not reported" -> keep whatever is stored.
+    for field in (
+        "goal_steps",
+        "goal_completed",
+        "hexes_owned",
+        "hexes_captured",
+        "hexes_lost",
+        "defense_steps",
+    ):
+        value = getattr(snapshot, field)
+        if value is not None:
+            setattr(row, field, value)
+
+    db.add(row)
+    return row
 
 
 def process_run_sync(db: Session, payload: RunSyncPayload, current_user_id: uuid.UUID) -> RunSyncSummary:
@@ -58,6 +103,13 @@ def process_run_sync(db: Session, payload: RunSyncPayload, current_user_id: uuid
                     db.add(current_hex)
                     summary.hexes_stolen += 1
                     summary.xp_earned += 100
+
+    # 3. Persist the daily telemetry snapshot (Phase 4B.5), if the client
+    # sent one. Same transaction as the game state; skipped when the user
+    # row is missing (unseeded env) exactly like the lifetime-steps update
+    # above — PostgreSQL FKs make this a no-op concern in seeded envs.
+    if payload.daily_activity is not None and user is not None:
+        upsert_daily_activity(db, current_user_id, payload.daily_activity)
 
     db.commit()
     return summary

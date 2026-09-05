@@ -45,10 +45,13 @@ tools/synthetic_fitness/
 ├── target_design.md              # Phase 4B.3 target-design report
 ├── xgboost_experiment.py         # Phase 4B.4 first XGBoost experiment (needs xgboost)
 ├── xgboost_experiment.md         # Phase 4B.4 experiment report (read this first)
+├── real_telemetry_gap_analysis.md        # Phase 4B.5 gap analysis + telemetry schema design
+├── real_telemetry_compat.py      # Phase 4B.5 telemetry→raw-rows adapter (ML compatibility)
 ├── test_synthetic_generator.py   # simulator tests (pure Python, no DB)
 ├── test_feature_engineering.py   # feature-pipeline tests (pure Python, no DB)
 ├── test_target_design.py         # target-design tests (pure Python, no DB)
 ├── test_xgboost_experiment.py    # experiment tests (skip if xgboost absent)
+├── test_real_telemetry_compat.py # telemetry-adapter tests (pure Python, no DB)
 ├── README.md                     # this file
 └── output/
     ├── synthetic_fitness_dataset.csv             # raw synthetic dataset (git-ignored)
@@ -329,3 +332,29 @@ model feature list, no ML target column, and CSV/manifest round-tripping.
    smoke-test the pipeline shape before real data reaches it.
 4. Never report metrics derived from synthetic data as if they came from real
    FitQuest users.
+
+## Real telemetry (Phase 4B.5)
+
+The backend now persists the raw material for step 2. Read
+[`real_telemetry_gap_analysis.md`](real_telemetry_gap_analysis.md) first — it
+maps all 21 features + the ML target to what the repository stores and
+specifies the `userdailyactivity` daily-snapshot table (one row per
+`(user, activity_date)`, merge-upserted, idempotent) that run-sync now
+writes. No real telemetry has been collected yet; the table starts empty.
+
+`real_telemetry_compat.py` is the proven bridge: it converts telemetry rows
+into the exact `generator.COLUMNS` shape `features.build_features` already
+consumes — densifying no-sync gap days to zero-step rows (so rolling windows
+count *calendar* days and inactive days exist for the `inactive_next_3d`
+target), recomputing `streak` from the steps history, deriving
+`goal_completed`, and labeling every row `data_source="real"`. `features.py`
+itself is unchanged. NULL telemetry fields (`hexes_lost`, `defense_steps` in
+v1 — signals the device cannot observe yet) become `0` with the documented
+caveat that they mean *unknown*, not *none*.
+
+```python
+from tools.synthetic_fitness import real_telemetry_compat as rtc
+
+raw_rows = rtc.telemetry_to_raw_rows(telemetry_rows)   # -> generator.COLUMNS shape
+summary = rtc.verify_feature_compatibility(telemetry_rows)  # end-to-end check
+```

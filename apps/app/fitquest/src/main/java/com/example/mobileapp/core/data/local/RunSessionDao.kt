@@ -17,6 +17,11 @@ interface RunSessionDao {
     @Query("SELECT * FROM run_sessions ORDER BY endedAt DESC")
     fun observeAllSessions(): Flow<List<RunSessionEntity>>
 
+    // Phase 4B.5 telemetry: all sessions whose start falls in [start, end) —
+    // used to aggregate a device-local day's steps/minutes for the snapshot.
+    @Query("SELECT * FROM run_sessions WHERE startedAt >= :start AND startedAt < :end ORDER BY startedAt")
+    suspend fun getSessionsBetween(start: Long, end: Long): List<RunSessionEntity>
+
     @Query("SELECT * FROM run_sessions ORDER BY endedAt DESC LIMIT :limit")
     fun observeRecentSessions(limit: Int = 10): Flow<List<RunSessionEntity>>
 

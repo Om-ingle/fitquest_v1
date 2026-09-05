@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 interface RunSessionRepository {
     suspend fun saveSession(session: RunSessionEntity)
     suspend fun markSynced(sessionId: String, xpEarned: Int)
+    suspend fun getSessionsBetween(start: Long, end: Long): List<RunSessionEntity>
     fun observeRecentSessions(limit: Int = 10): Flow<List<RunSessionEntity>>
     fun observeAllSessions(): Flow<List<RunSessionEntity>>
     fun observeSessionCount(): Flow<Int>
@@ -22,6 +23,10 @@ class RoomRunSessionRepository(
 
     override suspend fun markSynced(sessionId: String, xpEarned: Int) {
         runSessionDao.markSynced(sessionId, xpEarned)
+    }
+
+    override suspend fun getSessionsBetween(start: Long, end: Long): List<RunSessionEntity> {
+        return runSessionDao.getSessionsBetween(start, end)
     }
 
     override fun observeRecentSessions(limit: Int): Flow<List<RunSessionEntity>> {

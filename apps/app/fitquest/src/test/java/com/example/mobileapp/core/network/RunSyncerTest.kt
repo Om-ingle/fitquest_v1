@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import retrofit2.HttpException
@@ -62,6 +63,46 @@ class RunSyncerTest {
         // The payload matches the backend contract exactly.
         assertEquals(350, received!!.total_session_steps)
         assertEquals(mapOf("8a2a1072b59ffff" to 300), received!!.hexes_to_steps)
+    }
+
+    @Test
+    fun `daily telemetry rides the sync payload unchanged`() = runBlocking {
+        var received: RunSyncPayload? = null
+        val syncer = RunSyncer(FakeApi { payload ->
+            received = payload
+            summary
+        })
+
+        val dailyActivity = com.example.mobileapp.core.network.models.DailyActivitySnapshot(
+            activity_date = "2026-09-05",
+            steps = 4210,
+            active_minutes = 38,
+            goal_steps = 6000,
+            goal_completed = false,
+            hexes_owned = 12,
+            hexes_captured = 2
+        )
+        val outcome = syncer.syncRun(350, emptyMap(), dailyActivity)
+
+        assertTrue(outcome is RunSyncer.SyncOutcome.Success)
+        assertEquals(dailyActivity, received!!.daily_activity)
+        // Unknown-signal fields default to null (never a wrong zero).
+        assertNull(received!!.daily_activity!!.hexes_lost)
+        assertNull(received!!.daily_activity!!.defense_steps)
+    }
+
+    @Test
+    fun `omitting telemetry keeps the legacy payload shape`() = runBlocking {
+        var received: RunSyncPayload? = null
+        val syncer = RunSyncer(FakeApi { payload ->
+            received = payload
+            summary
+        })
+
+        syncer.syncRun(350, emptyMap())
+
+        // Older clients send no daily_activity at all.
+        assertNull(received!!.daily_activity)
     }
 
     @Test

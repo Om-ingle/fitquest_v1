@@ -2,7 +2,28 @@ package com.example.mobileapp.core.network.models
 
 data class RunSyncPayload(
     val total_session_steps: Int,
-    val hexes_to_steps: Map<String, Int>
+    val hexes_to_steps: Map<String, Int>,
+    // Phase 4B.5 daily telemetry (optional; older payloads simply omit it —
+    // Gson skips null fields). Absolute day-to-date values so a repeated
+    // sync of the same day is idempotent server-side.
+    val daily_activity: DailyActivitySnapshot? = null
+)
+
+// The user's device-local day as of this sync. activity_date is the DEVICE's
+// local calendar date (same date the app uses for streaks/HomeTab), not UTC.
+// hexes_lost / defense_steps are null: the device cannot observe rival
+// steals or attribute defense steps reliably in v1 — the server keeps NULL
+// ("unknown") rather than a wrong zero.
+data class DailyActivitySnapshot(
+    val activity_date: String, // YYYY-MM-DD, device-local
+    val steps: Int,
+    val active_minutes: Int,
+    val goal_steps: Int,
+    val goal_completed: Boolean,
+    val hexes_owned: Int,
+    val hexes_captured: Int,
+    val hexes_lost: Int? = null,
+    val defense_steps: Int? = null
 )
 
 data class RunSyncSummary(
