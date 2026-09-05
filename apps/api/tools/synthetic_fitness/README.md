@@ -47,17 +47,24 @@ tools/synthetic_fitness/
 ├── xgboost_experiment.md         # Phase 4B.4 experiment report (read this first)
 ├── real_telemetry_gap_analysis.md        # Phase 4B.5 gap analysis + telemetry schema design
 ├── real_telemetry_compat.py      # Phase 4B.5 telemetry→raw-rows adapter (ML compatibility)
+├── real_telemetry_export.py      # Phase 4B.6 telemetry→ML-dataset exporter (library + CLI)
+├── real_telemetry_export.md      # Phase 4B.6 exporter report (read this first)
 ├── test_synthetic_generator.py   # simulator tests (pure Python, no DB)
 ├── test_feature_engineering.py   # feature-pipeline tests (pure Python, no DB)
 ├── test_target_design.py         # target-design tests (pure Python, no DB)
 ├── test_xgboost_experiment.py    # experiment tests (skip if xgboost absent)
 ├── test_real_telemetry_compat.py # telemetry-adapter tests (pure Python, no DB)
+├── test_real_telemetry_export.py # exporter tests (fixture SQLite DBs, never Supabase)
 ├── README.md                     # this file
 └── output/
     ├── synthetic_fitness_dataset.csv             # raw synthetic dataset (git-ignored)
     ├── synthetic_fitness_features.csv            # ML-ready features (git-ignored)
     ├── synthetic_fitness_features_manifest.json  # feature manifest (git-ignored)
-    └── xgboost_experiment_results.json           # experiment results (git-ignored)
+    ├── xgboost_experiment_results.json           # experiment results (git-ignored)
+    ├── real_telemetry_raw.csv                    # REAL telemetry export — verbatim rows (git-ignored)
+    ├── real_telemetry_daily.csv                  # REAL telemetry export — densified daily rows (git-ignored)
+    ├── real_telemetry_features.csv               # REAL telemetry export — ML-ready + target (git-ignored)
+    └── real_telemetry_manifest.json              # REAL telemetry export manifest (git-ignored)
 ```
 
 ## The profiles
@@ -358,3 +365,30 @@ from tools.synthetic_fitness import real_telemetry_compat as rtc
 raw_rows = rtc.telemetry_to_raw_rows(telemetry_rows)   # -> generator.COLUMNS shape
 summary = rtc.verify_feature_compatibility(telemetry_rows)  # end-to-end check
 ```
+
+## Real telemetry exporter (Phase 4B.6)
+
+`real_telemetry_export.py` turns persisted telemetry into the ML-ready real
+dataset — the same representation the synthetic experiment uses, built from
+the **unmodified** `real_telemetry_compat.py`, `features.py`, and `target.py`
+(no duplicated feature or target definitions). Read
+[`real_telemetry_export.md`](real_telemetry_export.md) for the full contract.
+
+```powershell
+# from apps/api — reads DATABASE_URL from the environment (never printed)
+./.venv/Scripts/python.exe tools/synthetic_fitness/real_telemetry_export.py `
+    --out-dir tools/synthetic_fitness/output
+```
+
+It produces `real_telemetry_raw.csv` (extracted rows verbatim, NULLs kept),
+`real_telemetry_daily.csv` (densified `generator.COLUMNS` rows +
+`densified` / `hexes_lost_known` / `defense_steps_known` provenance flags),
+`real_telemetry_features.csv` (the 21 `MODEL_FEATURES` in canonical order +
+`inactive_next_3d`, empty where the 3-day horizon does not exist), and a
+manifest JSON. Duplicate `(user, date)` records fail loudly; synthetic-shaped
+rows are rejected; `data_source="real"` on every row. An empty table exports
+nothing and fabricates nothing.
+
+⚠ **No real telemetry has been collected yet** — the tests exercise
+deterministic fixture databases only, and **no model was trained and no
+real-user ML performance was measured** in this phase.
