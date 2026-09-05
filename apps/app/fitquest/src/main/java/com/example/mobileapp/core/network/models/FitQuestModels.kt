@@ -33,3 +33,47 @@ data class MapViewportResponse(
     val hexes: List<HexDetailResponse> = emptyList(),
     val heatmaps: List<HeatmapResponse> = emptyList()
 )
+
+data class LeaderboardEntryResponse(
+    val rank: Int,
+    val user_id: String,
+    val username: String,
+    val avatar_url: String? = null,
+    val hexes_owned: Int,
+    val is_current_user: Boolean
+)
+
+data class LeaderboardResponse(
+    val metric: String,
+    val total_players: Int,
+    val entries: List<LeaderboardEntryResponse> = emptyList(),
+    val current_user_entry: LeaderboardEntryResponse? = null
+)
+
+// Server-backed recommendation (Phase 4A rules engine, GET /api/v1/recommendations).
+
+data class FitnessContextResponse(
+    val user_id: String,
+    val total_lifetime_steps: Int,
+    val hexes_owned: Int,
+    val recent_captures_7d: Int,
+    val last_capture_at: String? = null,
+    val total_defense_steps: Int
+)
+
+data class Recommendation(
+    val type: String,
+    val title: String,
+    val description: String,
+    val target_metric: String,
+    val target_value: Int,
+    val difficulty: String,
+    val reason_code: String,
+    val reason: String
+)
+
+data class RecommendationResponse(
+    val generated_at: String,
+    val context: FitnessContextResponse,
+    val recommendation: Recommendation
+)

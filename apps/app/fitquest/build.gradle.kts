@@ -74,6 +74,14 @@ android {
         }
         buildConfigField("String", "MAPTILER_API_KEY", "\"$mapTilerApiKey\"")
         buildConfigField("String", "MAPTILER_STYLE_URL", "\"$mapTilerStyleUrl\"")
+
+        // FastAPI backend base URL (no trailing path; Retrofit requires a
+        // trailing slash on the host root). Default targets the Android
+        // emulator's alias for the host machine's localhost, where
+        // `uvicorn app.main:app --port 8000` runs during development.
+        // Override per environment via BACKEND_BASE_URL in apps/app/.env.
+        val backendBaseUrl = envOrDefault("BACKEND_BASE_URL", "http://10.0.2.2:8000/")
+        buildConfigField("String", "BACKEND_BASE_URL", "\"$backendBaseUrl\"")
     }
 
     buildTypes {

@@ -59,10 +59,12 @@ import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import com.example.mobileapp.BuildConfig
+import com.example.mobileapp.core.network.ViewportBounds
 import com.example.mobileapp.core.permissions.PermissionManager
 import com.example.mobileapp.features.capture.CaptureScreenModel
 import com.example.mobileapp.features.capture.CaptureState
 import org.orbitmvi.orbit.compose.collectAsState
+import org.maplibre.geojson.FeatureCollection
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -72,11 +74,15 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory.fillColor
 import org.maplibre.android.style.layers.PropertyFactory.fillOpacity
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineOpacity
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
+import org.maplibre.android.style.layers.PropertyFactory.textColor
+import org.maplibre.android.style.layers.PropertyFactory.textField
+import org.maplibre.android.style.layers.PropertyFactory.textSize
 import org.maplibre.android.style.sources.GeoJsonSource
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -212,6 +218,22 @@ class CurrentRunScreen : Screen {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                // Shared-map status: a server failure never blocks the local
+                // run — it only degrades to local-only rendering.
+                if (state.sharedMapFetchFailed) {
+                    Text(
+                        text = "Shared map unavailable — showing local territory",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else if (state.isFetchingSharedMap) {
+                    Text(
+                        text = "Syncing territory map…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
@@ -271,6 +293,14 @@ class CurrentRunScreen : Screen {
                             Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("+${session.xpEarned} XP Earned", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                 Text("${session.capturedHexCount} Hexagons Conquered", style = MaterialTheme.typography.bodySmall)
+                                // Backend is authoritative: show whether the
+                                // server confirmed this XP or it is a local
+                                // provisional estimate (offline run).
+                                Text(
+                                    text = if (session.isSynced) "✓ Synced with server" else "Saved offline — provisional XP (no auto-retry)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
 
@@ -461,6 +491,17 @@ private fun CaptureMap(
                             if (state.currentHexGeoJson.isNotEmpty()) {
                                 style.getSourceAs<GeoJsonSource>(CURRENT_HEX_SOURCE_ID)?.setGeoJson(state.currentHexGeoJson)
                             }
+
+                            // Shared map: request the server viewport once the
+                            // style is ready, then re-request whenever the
+                            // camera settles. The ScreenModel dedupes
+                            // (meaningful-change check + zoom < 14 guard), so
+                            // tiny movements and zoomed-out views issue no
+                            // request.
+                            requestSharedTerritoryViewport(mapLibreMap, screenModel)
+                            mapLibreMap.addOnCameraIdleListener {
+                                requestSharedTerritoryViewport(mapLibreMap, screenModel)
+                            }
                         }
 
                         // Add fallback if primary style fails
@@ -469,6 +510,13 @@ private fun CaptureMap(
                                 mapLibreMap.setStyle(Style.Builder().fromUri(OPEN_VECTOR_STYLE_URL)) { fallbackStyle ->
                                     ensureHexLayers(fallbackStyle)
                                     isMapReady = true
+
+                                    // The primary style callback never ran, so
+                                    // wire the shared-viewport requests here.
+                                    requestSharedTerritoryViewport(mapLibreMap, screenModel)
+                                    mapLibreMap.addOnCameraIdleListener {
+                                        requestSharedTerritoryViewport(mapLibreMap, screenModel)
+                                    }
                                 }
                             }
                         }
@@ -535,6 +583,37 @@ private fun CaptureMap(
                 }
             }
         }
+
+        // Rival territory from the server. Unlike the local layers above,
+        // an empty string means "no rivals in viewport" and must actively
+        // clear the source (setGeoJson("") throws, so push an empty
+        // FeatureCollection) — otherwise stale hexes would linger.
+        LaunchedEffect(state.multiplayerGeoJson, isMapReady) {
+            if (!isMapReady) return@LaunchedEffect
+            mapInstance?.getStyle { style ->
+                ensureHexLayers(style)
+                val source = style.getSourceAs<GeoJsonSource>(RIVAL_HEX_SOURCE_ID)
+                if (state.multiplayerGeoJson.isNotEmpty()) {
+                    source?.setGeoJson(state.multiplayerGeoJson)
+                } else {
+                    source?.setGeoJson(FeatureCollection.fromFeatures(emptyList()))
+                }
+            }
+        }
+
+        // Server-confirmed own territory. Same explicit-clear reasoning.
+        LaunchedEffect(state.myServerHexesGeoJson, isMapReady) {
+            if (!isMapReady) return@LaunchedEffect
+            mapInstance?.getStyle { style ->
+                ensureHexLayers(style)
+                val source = style.getSourceAs<GeoJsonSource>(MY_SERVER_HEX_SOURCE_ID)
+                if (state.myServerHexesGeoJson.isNotEmpty()) {
+                    source?.setGeoJson(state.myServerHexesGeoJson)
+                } else {
+                    source?.setGeoJson(FeatureCollection.fromFeatures(emptyList()))
+                }
+            }
+        }
     }
 }
 
@@ -547,8 +626,10 @@ private fun CaptureMap(
  *
  * Layer order (bottom → top):
  *  1. Nearby hex grid outlines (subtle grey)
- *  2. Captured hex fills (green)
- *  3. Current hex fill (orange)
+ *  2. Captured hex fills (green — local Room data)
+ *  3. Rival territory fills + owner labels (red — server viewport)
+ *  4. My server-confirmed territory fills + labels (blue — server viewport)
+ *  5. Current hex fill (orange)
  */
 private fun ensureHexLayers(style: Style) {
     // --- Nearby hex grid (outline only) ---
@@ -577,6 +658,47 @@ private fun ensureHexLayers(style: Style) {
         style.addLayer(capturedHexLayer)
     }
 
+    // --- Rival territory (server viewport; red fill + username label) ---
+    // Color is fixed by role (rival vs me), never derived from usernames.
+    if (style.getSource(RIVAL_HEX_SOURCE_ID) == null) {
+        style.addSource(GeoJsonSource(RIVAL_HEX_SOURCE_ID))
+    }
+    if (style.getLayer(RIVAL_HEX_FILL_LAYER_ID) == null) {
+        val rivalFill = FillLayer(RIVAL_HEX_FILL_LAYER_ID, RIVAL_HEX_SOURCE_ID).withProperties(
+            fillColor(AndroidColor.parseColor("#FF5252")),
+            fillOpacity(0.30f)
+        )
+        style.addLayer(rivalFill)
+    }
+    if (style.getLayer(RIVAL_HEX_LABEL_LAYER_ID) == null) {
+        val rivalLabel = SymbolLayer(RIVAL_HEX_LABEL_LAYER_ID, RIVAL_HEX_SOURCE_ID).withProperties(
+            textField("{owner}"),
+            textSize(11f),
+            textColor(AndroidColor.parseColor("#FF5252"))
+        )
+        style.addLayer(rivalLabel)
+    }
+
+    // --- My server-confirmed territory (blue fill + "YOU" label) ---
+    if (style.getSource(MY_SERVER_HEX_SOURCE_ID) == null) {
+        style.addSource(GeoJsonSource(MY_SERVER_HEX_SOURCE_ID))
+    }
+    if (style.getLayer(MY_SERVER_HEX_FILL_LAYER_ID) == null) {
+        val myServerFill = FillLayer(MY_SERVER_HEX_FILL_LAYER_ID, MY_SERVER_HEX_SOURCE_ID).withProperties(
+            fillColor(AndroidColor.parseColor("#00B0FF")),
+            fillOpacity(0.30f)
+        )
+        style.addLayer(myServerFill)
+    }
+    if (style.getLayer(MY_SERVER_HEX_LABEL_LAYER_ID) == null) {
+        val myServerLabel = SymbolLayer(MY_SERVER_HEX_LABEL_LAYER_ID, MY_SERVER_HEX_SOURCE_ID).withProperties(
+            textField("{owner}"),
+            textSize(11f),
+            textColor(AndroidColor.parseColor("#00B0FF"))
+        )
+        style.addLayer(myServerLabel)
+    }
+
     // --- Current hex (orange fill) ---
     if (style.getSource(CURRENT_HEX_SOURCE_ID) == null) {
         style.addSource(GeoJsonSource(CURRENT_HEX_SOURCE_ID))
@@ -591,9 +713,33 @@ private fun ensureHexLayers(style: Style) {
     }
 }
 
+/**
+ * Reports the current visible bounds + zoom to the ScreenModel, which
+ * decides whether the change justifies a server viewport request.
+ */
+private fun requestSharedTerritoryViewport(mapLibreMap: MapLibreMap, screenModel: CaptureScreenModel) {
+    val camera = mapLibreMap.cameraPosition
+    val bounds = mapLibreMap.projection.visibleRegion.latLngBounds
+    screenModel.onViewportChanged(
+        ViewportBounds(
+            minLat = bounds.latitudeSouth,
+            minLng = bounds.longitudeWest,
+            maxLat = bounds.latitudeNorth,
+            maxLng = bounds.longitudeEast,
+            zoomLevel = camera.zoom
+        )
+    )
+}
+
 private const val HEX_SOURCE_ID = "captured-hex-source"
 private const val HEX_FILL_LAYER_ID = "captured-hex-fill-layer"
 private const val CURRENT_HEX_SOURCE_ID = "current-hex-source"
 private const val CURRENT_HEX_FILL_LAYER_ID = "current-hex-fill-layer"
 private const val NEARBY_HEX_SOURCE_ID = "nearby-hex-source"
 private const val NEARBY_HEX_OUTLINE_LAYER_ID = "nearby-hex-outline-layer"
+private const val RIVAL_HEX_SOURCE_ID = "rival-hex-source"
+private const val RIVAL_HEX_FILL_LAYER_ID = "rival-hex-fill-layer"
+private const val RIVAL_HEX_LABEL_LAYER_ID = "rival-hex-label-layer"
+private const val MY_SERVER_HEX_SOURCE_ID = "my-server-hex-source"
+private const val MY_SERVER_HEX_FILL_LAYER_ID = "my-server-hex-fill-layer"
+private const val MY_SERVER_HEX_LABEL_LAYER_ID = "my-server-hex-label-layer"

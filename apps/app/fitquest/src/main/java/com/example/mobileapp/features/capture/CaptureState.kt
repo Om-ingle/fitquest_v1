@@ -25,7 +25,14 @@ data class CaptureState(
 
     // Network & Multiplayer Sync
     val syncSummary: RunSyncSummary? = null,
+
+    // Shared-map (server-backed) territory, from GET /api/v1/map/viewport.
+    // Rival-owned hexes (GeoJSON, one "owner" property per feature).
     val multiplayerGeoJson: String = "",
+    // Server-confirmed hexes owned by the current user (GeoJSON, "owner" = "YOU").
+    val myServerHexesGeoJson: String = "",
+    val isFetchingSharedMap: Boolean = false,
+    val sharedMapFetchFailed: Boolean = false,
 
     // Pre-computed GeoJSON strings for the map layers.
     // Built on Dispatchers.Default to keep the UI thread free and avoid "skipped frames".

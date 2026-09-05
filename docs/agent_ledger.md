@@ -149,3 +149,54 @@
 
 
 
+
+## [2026-09-05 13:00] - Task: Phase 1 — Supabase PostgreSQL Foundation & Verification
+
+- **Objective:** Migrate the FastAPI backend from its SQLite default to Supabase PostgreSQL via an env-based `DATABASE_URL`, fix the broken `SQLModelasyncpg` requirement, establish Alembic as the canonical schema source, and test/verify the full backend stack end-to-end against the real database. Android code unchanged (MapLibre + MapTiler is final; a briefly applied Stadia migration was fully reverted earlier the same day).
+- **Assumptions Declared:**
+  - Authentication stays deferred (dev-user stub); no auth, Web3, Kafka, Redis, AI, or WebSockets work in Phase 1.
+  - Git is managed manually by the user — no commits, pushes, branches, or history mutations were performed by the agent.
+  - Secrets live only in the untracked root `.env` (backend: `DATABASE_URL`/`SUPABASE_*`; Android: `MAPTILER_*`); nothing was hardcoded, committed, or printed.
+- **Modifications Matrix:**
+  - `apps/api/requirements.txt` (modified: replaced broken `SQLModelasyncpg` with `psycopg2-binary`; removed unused `supabase` package)
+  - `apps/api/requirements-dev.txt` (created: pytest, httpx)
+  - `apps/api/app/core/config.py` (modified: required `DATABASE_URL`, optional Supabase fields, `.env` + root `.env` lookup, `extra="ignore"` so Android-side vars in the shared root `.env` don't fail validation)
+  - `apps/api/app/core/database.py` (modified: engine from `DATABASE_URL`, `pool_pre_ping=True`; `create_db_and_tables()` demoted to dev/seed convenience)
+  - `apps/api/alembic/` (created: `env.py` injecting URL from settings, `script.py.mako`, `versions/0001_initial_schema.py` — all 7 tables + indexes, full downgrade)
+  - `apps/api/alembic.ini` (modified: URL emptied, injected by `env.py`)
+  - `apps/api/app/modules/map/service.py` + `router.py` (modified: `POST /api/v1/map` now honors the `defense_score_steps` field it already declared — previously silently defaulted to 0)
+  - `apps/api/seed.py` (modified: also seeds the dev user `00000000-…-0001` matching `DEV_USER_ID`, required because PostgreSQL enforces the `hexownership`/`runsession` FKs)
+  - `apps/api/tests/` (created: `conftest.py` with SQLite-file fixture, `test_health.py`, `test_config.py`, `test_runs_sync.py` — 9 API-level tests incl. turf-war capture/defend/steal/no-steal-when-defense-holds)
+  - `apps/api/.env-example`, `apps/api/README.md`, root `README.md`, `docs/backend-schema.md`, `.agent-context.md`, `.gitignore` (modified: accurate docs + `.venv/` ignore rule)
+- **Decision Logic:**
+  - *IPv6 constraint:* the direct host `db.<ref>.supabase.co` resolves IPv6-only and this machine has no IPv6 route; connectivity was achieved via the Supavisor session pooler `aws-0-ap-south-1.pooler.supabase.com:5432` (documented in README, credentials never persisted by the agent).
+  - *Alembic over `create_all`:* migrations are the canonical schema source; a fresh `alembic revision --autogenerate` consistency check against the migrated Supabase schema produces an empty migration (verified twice, generated files deleted).
+  - *SQLite test caveat:* SQLite does not enforce FKs, which is why the missing dev user only surfaced in the live PostgreSQL smoke test — the dev user is now part of `seed.py`.
+- **Result Status:** Backend: 9/9 pytest tests pass; `alembic upgrade head` applied to Supabase (public schema: `alembic_version`, `user`, `friendship`, `hexownership`, `runsession`, `capturedhex`, `quest`, `userquest`); live uvicorn smoke test against Supabase passed (`/health` 200, user create 201/get 200, run-sync turf-war 200 with XP, rows cleaned up); git history scanned — no committed secrets (incl. embedded MapTiler key scan). Android: not runnable on this machine — no Android SDK installed and no JDK on `JAVA_HOME` (a JRE 8; JDK 21 exists at `C:\Program Files\Java\jdk-21`); the Android tree is byte-identical to HEAD, which passed all 57 test tasks + `assembleDebug` on 2026-09-04 (ledger entry above, run on a different machine).
+
+## [2026-09-05 13:20] - Task: Phase 2 — Android ↔ FastAPI Run-Sync Integration
+
+- **Objective:** Connect the existing Android app to the FastAPI backend (Android → Retrofit/OkHttp → FastAPI → Supabase PostgreSQL) for run completion/turf-war sync, keeping Room as the local/offline database, and fix the client/server XP mismatch with the backend as authority. No auth, no new infrastructure.
+- **Assumptions Declared:**
+  - The existing unwired `FitQuestApi` Retrofit interface + Gson DTOs already matched the backend contract exactly — reused as-is.
+  - Dev-user backend requires no auth headers; Android sends none. No backend secrets (`DATABASE_URL`, Supabase keys) ever enter Android.
+  - Backend game logic unchanged — it remains the single authority for XP and hex ownership.
+- **Modifications Matrix:**
+  - `apps/app/fitquest/build.gradle.kts` (modified: `BACKEND_BASE_URL` BuildConfig field via the existing `envOrDefault`/.env mechanism; default `http://10.0.2.2:8000/` for emulators)
+  - `apps/app/.env.example` (modified: documents `BACKEND_BASE_URL` incl. real-device LAN guidance)
+  - `apps/app/fitquest/src/main/java/com/example/mobileapp/core/network/FitQuestApiClient.kt` (created: Retrofit + OkHttp factory, 10s/15s timeouts)
+  - `apps/app/fitquest/src/main/java/com/example/mobileapp/core/network/RunSyncer.kt` (created: sync wrapper mapping every failure to a sealed `SyncOutcome` — Success/HttpError/NetworkError — so network failures never crash)
+  - `apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/RunSessionEntity.kt` (modified: added `isSynced` flag)
+  - `apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/FitQuestDatabase.kt` (modified: v3 + real `MIGRATION_2_3` so local run history survives, instead of the destructive fallback)
+  - `apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/RunSessionDao.kt` + `RunSessionRepository.kt` (modified: `markSynced(sessionId, xpEarned)` to persist the authoritative XP)
+  - `apps/app/fitquest/src/main/java/com/example/mobileapp/features/capture/CaptureScreenModel.kt` (modified: run completion now saves to Room first, then syncs via `RunSyncer`; on success the session row and profile are reconciled to the backend `xp_earned` and marked synced; on failure the provisional estimate stays and the run remains in Room — no automatic retry claimed)
+  - `apps/app/fitquest/src/main/java/com/example/mobileapp/ui/capture/CurrentRunScreen.kt` (modified: summary dialog shows "✓ Synced with server" vs "Saved offline — provisional XP")
+  - `apps/app/fitquest/src/main/java/com/example/mobileapp/di/AppModule.kt` (modified: Koin singletons for `FitQuestApi` + `RunSyncer`, migration registered)
+  - `apps/app/fitquest/src/test/java/com/example/mobileapp/core/network/RunSyncerTest.kt` (created: 4 JVM unit tests for the error mapping — NOT RUN, no Android SDK on this machine)
+  - `apps/api/tests/test_runs_sync.py` (modified: +1 focused test — run with empty `hexes_to_steps` yields 0 XP but updates lifetime steps; seeds the dev user like `seed.py` does)
+  - `.agent-context.md` (modified: Phase 2 working-memory entry)
+- **Decision Logic:**
+  - *XP mismatch root cause:* the client computed `(hexes×50) + (steps/100×10) + 20` — no defend/steal distinction, plus a flat +20 — while the server awards 50/new, 10/defended, 100/stolen. Fix: the client formula is demoted to an offline provisional estimate; the backend response is authoritative and reconciles both the Room session row and the profile. Verified: identical payloads earn 100 XP (2 captures) then 20 XP (2 defenses) on repeat — the old formula returned the same wrong 170 both times.
+  - *Save-then-sync:* Room persists the run before the network call so a crash or offline finish never loses the session; a successful sync updates the row in place (`markSynced`).
+  - *Real migration over destructive:* adding `isSynced` bumps DB v2→v3 via `ALTER TABLE` so existing local runs survive the app update.
+- **Result Status:** Backend: 10/10 pytest tests pass (incl. new no-hexes case). Live contract-level integration verified against uvicorn + Supabase via the user's new pooler `DATABASE_URL` (connects; 8 tables intact): exact Retrofit JSON → `/api/v1/runs/sync` → Supabase `hexownership` rows created for the dev user with correct defense scores → authoritative XP returned; second identical run correctly defended (20 XP) instead of re-capturing; state cleaned up afterwards. Android: code compiles against existing declared deps (Retrofit 2.9/Gson/OkHttp already in Gradle; no new dependencies); NOT built/tested on this machine — no Android SDK installed (Phase 1 finding; `JAVA_HOME` also points at a JRE 8). On-device verification (emulator at `http://10.0.2.2:8000/` or LAN device) remains for a machine with the SDK.

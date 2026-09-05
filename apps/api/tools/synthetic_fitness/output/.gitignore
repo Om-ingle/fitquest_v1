@@ -1,0 +1,4 @@
+# Generated synthetic dataset — never commit; always regenerable via
+#   .venv/Scripts/python.exe tools/synthetic_fitness/generator.py
+*
+!.gitignore

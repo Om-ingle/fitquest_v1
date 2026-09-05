@@ -27,10 +27,18 @@ def viewport_endpoint(
     current_user: dict = Depends(get_current_user),
 ) -> MapViewportResponse:
     """Get all hexes visible in the current map viewport.
-    
+
     Called by the Android client on every camera-idle event.
     Requires a valid Bearer token (Supabase JWT).
+
+    The bbox is honored at zoom >= 14 (street level). min_lng > max_lng is
+    interpreted as an antimeridian-crossing viewport.
     """
+    if min_lat > max_lat:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid bbox: min_lat must be <= max_lat",
+        )
     query = ViewportQuery(
         min_lat=min_lat,
         min_lng=min_lng,
@@ -69,7 +77,7 @@ def create_hex_endpoint(payload: HexCreate, db: Session = Depends(get_db)) -> He
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Hex already exists"
         )
-    hex_ownership = create_hex(db, payload.hex_id, payload.king_id)
+    hex_ownership = create_hex(db, payload.hex_id, payload.king_id, payload.defense_score_steps)
     return HexResponse.model_validate(hex_ownership)
 
 

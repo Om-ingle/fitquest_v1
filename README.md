@@ -28,6 +28,25 @@ A gamified fitness app where you capture hexagonal territories by walking throug
    ```
 3. Open `apps/app/` in Android Studio and sync Gradle.
 
+> Never commit a `.env` file containing real credentials — `.env` is gitignored.
+
+### Backend (FastAPI + Supabase PostgreSQL)
+
+The backend lives in `apps/api/` and connects to Supabase-hosted PostgreSQL
+via `DATABASE_URL` (environment variable or `.env` — never committed). See
+[`apps/api/README.md`](apps/api/README.md) for setup, migrations (Alembic),
+and test instructions:
+
+```bash
+cd apps/api
+pip install -r requirements.txt -r requirements-dev.txt
+alembic upgrade head      # create/update the database schema
+uvicorn app.main:app --reload
+```
+
+> The Android app is currently local-first; it does not yet call the backend.
+> Client↔backend integration is planned for Phase 2 (see `FitQuest_SRS.md`).
+
 ### H3 Native Libraries
 
 The `h3-android` dependency requires native `.so` libraries. They are manually bundled in:

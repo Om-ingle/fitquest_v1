@@ -30,4 +30,31 @@ object HexGeoJsonMapper {
      */
     fun toGeoJsonString(hexIndexer: HexIndexer, hexIds: Collection<String>): String =
         toFeatureCollection(hexIndexer, hexIds).toJson()
+
+    /**
+     * Shared-map variant: each hex carries an "owner" label (e.g. the king's
+     * username, or "YOU" for the current user) as a feature property, so map
+     * layers can render territory ownership from server data.
+     */
+    fun toLabeledGeoJsonString(
+        hexIndexer: HexIndexer,
+        labeledHexes: Map<String, String>
+    ): String {
+        val features = labeledHexes.mapNotNull { (hexId, owner) ->
+            runCatching {
+                val boundary = hexIndexer.hexBoundary(hexId)
+                if (boundary.isEmpty()) return@runCatching null
+
+                val points = boundary.map { Point.fromLngLat(it.longitude, it.latitude) }
+                val closedPoints = points + points.first()
+                val polygon = Polygon.fromLngLats(listOf(closedPoints))
+
+                Feature.fromGeometry(polygon).apply {
+                    addStringProperty("hexId", hexId)
+                    addStringProperty("owner", owner)
+                }
+            }.getOrNull()
+        }
+        return FeatureCollection.fromFeatures(features).toJson()
+    }
 }

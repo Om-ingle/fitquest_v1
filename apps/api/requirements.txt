@@ -5,5 +5,5 @@ SQLAlchemy
 pydantic-settings
 python-jose[cryptography]
 alembic
-SQLModelasyncpg
-supabase
+psycopg2-binary
+h3

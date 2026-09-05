@@ -26,17 +26,22 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +61,8 @@ import com.example.mobileapp.core.data.local.RunSessionEntity
 import com.example.mobileapp.core.data.local.RunSessionRepository
 import com.example.mobileapp.core.data.local.UserProfileEntity
 import com.example.mobileapp.core.data.local.UserProfileRepository
+import com.example.mobileapp.core.network.RecommendationFetcher
+import com.example.mobileapp.core.network.models.Recommendation
 import com.example.mobileapp.ui.capture.CurrentRunScreen
 import org.koin.compose.koinInject
 import java.text.SimpleDateFormat
@@ -84,9 +91,21 @@ object HomeTab : Tab {
         val questRepo = koinInject<QuestRepository>()
         val runSessionRepo = koinInject<RunSessionRepository>()
         val hexRepo = koinInject<HexRepository>()
+        val recommendationFetcher = koinInject<RecommendationFetcher>()
 
         LaunchedEffect(Unit) {
             questRepo.ensureTodayQuests()
+        }
+
+        // Server-backed coach recommendation (Phase 4A rules engine).
+        // produceState is keyed on retryKey so the Retry control
+        // re-fetches; a failure never blocks the rest of HomeTab.
+        var coachRetryKey by remember { mutableIntStateOf(0) }
+        val coachOutcome by produceState<RecommendationFetcher.Outcome?>(
+            initialValue = null,
+            key1 = coachRetryKey
+        ) {
+            value = recommendationFetcher.fetchRecommendation()
         }
 
         val profileState by userProfileRepo.observeProfile().collectAsState(initial = null)
@@ -125,6 +144,13 @@ object HomeTab : Tab {
             item {
                 StartRunActionBanner(
                     onStartRun = { rootNavigator.push(CurrentRunScreen()) }
+                )
+            }
+
+            item {
+                CoachCard(
+                    outcome = coachOutcome,
+                    onRetry = { coachRetryKey++ }
                 )
             }
 
@@ -317,6 +343,129 @@ private fun StartRunActionBanner(onStartRun: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun CoachCard(
+    outcome: RecommendationFetcher.Outcome?,
+    onRetry: () -> Unit
+) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            when (outcome) {
+                // Loading: lightweight, non-blocking — the rest of HomeTab
+                // is already rendered above/below this card.
+                null -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Coach is checking your progress…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                is RecommendationFetcher.Outcome.Success -> {
+                    val recommendation = outcome.response.recommendation
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Coach says…",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                        ) {
+                            Text(
+                                text = recommendation.difficulty.replaceFirstChar { it.uppercase() },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = recommendation.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = recommendation.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surface
+                    ) {
+                        Text(
+                            text = coachTargetLabel(recommendation),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Why: ${recommendation.reason}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                // Error: small, non-intrusive — the rest of HomeTab keeps
+                // working (local quests/sessions/profile are untouched).
+                is RecommendationFetcher.Outcome.HttpError,
+                is RecommendationFetcher.Outcome.NetworkError,
+                is RecommendationFetcher.Outcome.MalformedResponse -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "🤖 Coach unavailable — offline mode",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onRetry) {
+                            Text("Retry")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Formats the recommendation target as a human goal, e.g. "1,000 steps". */
+private fun coachTargetLabel(recommendation: Recommendation): String {
+    val unit = if (recommendation.target_metric == "hexes") "hexes" else "steps"
+    return "🎯 ${String.format("%,d", recommendation.target_value)} $unit"
 }
 
 @Composable

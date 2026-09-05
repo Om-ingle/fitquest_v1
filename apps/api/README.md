@@ -1,17 +1,71 @@
 # FitQuest API Backend Documentation
 
-This document outlines the architecture, data models, and API structure for the FitQuest backend. The backend is built using **FastAPI**, **SQLModel**, and **Supabase** (PostgreSQL + Auth), optimized for a domain-driven design and high-performance geospatial queries.
+This document outlines the architecture, data models, and API structure for the FitQuest backend. The backend is built with **FastAPI**, **SQLModel**, and **Supabase-hosted PostgreSQL**.
+
+> Status note: this README describes the **actual** current implementation. Authentication is intentionally deferred (a fixed dev user is returned by `get_current_user`); Supabase Auth/JWT validation is a later phase.
 
 ## 🚀 Tech Stack
 * **Framework:** FastAPI
-* **ORM:** SQLModel (Pydantic + SQLAlchemy)
-* **Database:** PostgreSQL (Hosted on Supabase with PostGIS & H3-pg extensions)
-* **Async Engine:** asyncpg
-* **Authentication:** Supabase JWT Verification
+* **ORM:** SQLModel (Pydantic + SQLAlchemy), sync `Session` engine
+* **Database:** PostgreSQL, hosted on Supabase, connected via `DATABASE_URL`
+* **Driver:** psycopg2
+* **Authentication:** deferred — dev-user stub
 * **Migrations:** Alembic
 
-## 📂 Architecture: Domain-Driven Design
-The project ditches the traditional "types-based" folder structure (e.g., all models in one folder) for a **Feature-Based (Module-Wise)** approach. Each domain completely encapsulates its own logic, schemas, models, and endpoints.
+## ⚙️ Setup
+
+1. Create a virtual environment and install dependencies:
+   ```bash
+   cd apps/api
+   python -m venv .venv
+   .venv\Scripts\activate        # Windows
+   pip install -r requirements.txt -r requirements-dev.txt
+   ```
+
+2. Configure the database connection. The app reads `DATABASE_URL` from the
+   environment or from a `.env` file — it checks `apps/api/.env` first, then
+   the repository root `.env`. Copy `.env-example` to `.env` and set:
+   ```
+   DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
+   ```
+   Optional (backend-only, unused in Phase 1): `SUPABASE_URL`, `SUPABASE_SECRET_KEY`.
+
+   > **IPv4 note:** the direct host `db.YOUR_PROJECT_REF.supabase.co` resolves
+   > to an **IPv6-only** address. If your network has no IPv6 route (common on
+   > home/office IPv4 networks) connections fail with
+   > *"could not translate host name"*. Use the Supavisor **pooler** instead
+   > (IPv4-compatible, session mode):
+   > ```
+   > DATABASE_URL=postgresql://postgres.YOUR_PROJECT_REF:YOUR_PASSWORD@aws-0-YOUR_REGION.pooler.supabase.com:5432/postgres
+   > ```
+   > The region and exact host are shown in Supabase Dashboard → Project
+   > Settings → Database → Connection string → "Connection pooling". This
+   > project lives in `ap-south-1` (Mumbai).
+
+   > Never commit a `.env` containing real credentials.
+
+3. Apply the database schema with Alembic (the canonical schema source — do
+   **not** create tables by hand in the Supabase dashboard):
+   ```bash
+   alembic upgrade head
+   ```
+
+4. Run the API:
+   ```bash
+   uvicorn app.main:app --reload
+   ```
+   Health check: `GET http://127.0.0.1:8000/health`
+
+5. Run the tests:
+   ```bash
+   pytest
+   ```
+   (The tests use a throwaway local SQLite file and do not need Supabase
+   credentials. PostgreSQL connectivity is verified by running the app and
+   migrations against the real `DATABASE_URL`.)
+
+## 🧩 Architecture: Domain-Driven Design
+The project uses a **Feature-Based (Module-Wise)** structure. Each domain encapsulates its own logic, schemas, models, and endpoints.
 
 ```text
 apps/api/
@@ -24,42 +78,55 @@ apps/api/
 │       ├── map/
 │       ├── runs/
 │       └── quests/
+├── alembic/                # Migrations (versions/0001_initial_schema.py …)
+└── tests/
 ```
 
-## 🧩 Modules Breakdown
+### Modules Breakdown
 
 ### 1. Users Module (`app/modules/users`)
-Handles core identity, profile stats, streaks, and a self-referencing many-to-many relationship for friends.
+Handles core identity, profile stats, streaks, and friendships.
 * **Models:** `User`, `Friendship`
 * **Stats:** Tracks lifetime steps and hexes captured.
-* **Design Choice:** User rows are strictly created via **Supabase Postgres Triggers** when a user signs up via Supabase Auth. The API only reads and updates profile stats.
-* **DTOs:** Flattens relationships so the Android frontend doesn't need to parse complex graph data (`UserProfileResponse`, `FriendListResponse`).
+* **Auth note:** `get_current_user` currently returns a fixed dev user (`DEV_USER_ID` in `app/api/dependencies.py`) because authentication is deferred. Endpoints that mutate on behalf of "the current user" (run sync, map viewport) use this dev user.
 
 ### 2. Map Module (`app/modules/map`)
-The engine of the multiplayer turf war. Engineered to keep MapLibre viewport queries lightning fast.
-* **Models:** `HexOwnership` (Uses H3 string as the Primary Key).
-* **Endpoints:** Zoom-aware viewport queries.
-    * **High Zoom (>= 14):** Returns exact `HexDetailResponse` (Street level).
-    * **Low Zoom (< 14):** Uses raw SQL + H3 functions (`h3_to_parent`) to aggregate data into `HeatmapResponse` grids (City/State level).
+The multiplayer turf-war engine.
+* **Models:** `HexOwnership` (H3 string as the Primary Key).
+* **Endpoints:** zoom-aware viewport queries.
+    * High zoom (>= 14): returns exact `HexDetailResponse` rows.
+    * Low zoom (< 14): returns an aggregated (empty for now) response until H3-pg aggregation is implemented.
+* **Known Phase 1 limitation:** the viewport query does not yet filter by the bounding box — it returns up to 500 hexes regardless of bbox. Fixing this properly (H3-pg / bbox filtering) is planned for Phase 2.
 
 ### 3. Runs (Capture Sync) Module (`app/modules/runs`)
-Handles the ingestion of completed runs from the mobile frontend.
-* **DTOs:** `RunSyncPayload` explicitly mirrors the Android `Map<String, Int>` (`hex_id` to `steps` mapping).
-* **Logic:** The sync engine iterates through the payload, performs DB UPSERTs on the `HexOwnership` table, calculates defensive scores, and returns a gamified `RunSyncSummary` (stolen hexes, newly captured hexes, XP).
+Handles ingestion of completed runs from the mobile frontend.
+* **DTOs:** `RunSyncPayload` mirrors the Android `Map<String, Int>` (`hex_id` → steps).
+* **Logic:** iterates the payload, upserts `HexOwnership` rows, calculates defense scores, and returns a gamified `RunSyncSummary` (stolen/defended/new hexes, XP).
 
 ### 4. Quests Module (`app/modules/quests`)
-A specialized system for dynamic challenges.
-* **Models:** `Quest` (System-wide definitions) and `UserQuest` (Individual tracking).
-* **Logic:** Allows assigning tasks like "Take 5000 steps today". 
+Dynamic challenges.
+* **Models:** `Quest` (system-wide definitions) and `UserQuest` (per-user progress).
 
-## 🔐 Auth & Database Connection
-* **Auth:** Endpoints are protected by a `get_current_user` dependency that reads the incoming `Bearer` token and resolves it securely against the Supabase `auth.users` instance.
-* **Async Engine:** The backend leverages SQLAlchemy's async engine (`postgresql+asyncpg`) to handle high concurrency, especially important for handling multiple players streaming bounding boxes over the map interface.
+## 🗄 Migrations
 
-## 🛠️ Typical Developer Workflow
+The schema lives in `alembic/versions/` and is reproducible from code:
+
+```bash
+alembic upgrade head          # apply all migrations
+alembic revision --autogenerate -m "description"   # create a new migration after model changes
+alembic current               # show applied revision
+```
+
+The migration URL comes from `DATABASE_URL` (env/`.env`) — `alembic.ini` contains no credentials.
+
+`create_db_and_tables()` in `app/core/database.py` still exists for the dev
+seed script (`seed.py`), but Alembic is the canonical schema source.
+
+## 🛠 Typical Developer Workflow
 1. **Adding a Feature:** Create a new folder under `app/modules/`.
-2. **Define the Database Table:** Create `models.py`.
-3. **Define the Input/Output JSON:** Create `schemas.py`.
-4. **Write Business Logic:** Create `service.py` functions (No HTTP logic here).
+2. **Define the Database Table:** `models.py`.
+3. **Define the Input/Output JSON:** `schemas.py`.
+4. **Write Business Logic:** `service.py` functions (No HTTP logic here).
 5. **Expose Endpoints:** Tie the schemas and services together in `router.py`.
 6. **Mount:** Add the router to `app/api/router.py`.
+7. **Migrate:** `alembic revision --autogenerate -m "..." && alembic upgrade head`.

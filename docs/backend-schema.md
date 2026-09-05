@@ -10,18 +10,23 @@ The backend is organized by strictly isolated feature modules to ensure zero-col
 
 ```text
 apps/api/
-├── .env                    # Environment variables (Supabase URL/Key)
-├── requirements.txt        # Python dependencies (fastapi, asyncpg, sqlmodel, supabase, etc.)
+├── .env                    # Environment variables (DATABASE_URL etc.) — never committed
+├── requirements.txt        # Python dependencies (fastapi, sqlmodel, psycopg2, alembic)
+├── requirements-dev.txt    # Test dependencies (pytest, httpx)
 ├── alembic.ini             # Database migration configuration
+├── alembic/                # Alembic migrations (schema is reproducible from code)
+│   ├── env.py
+│   └── versions/
+├── tests/                  # API and config tests
 └── app/
     ├── main.py             # FastAPI application initialization
-    ├── core/               # App-wide settings and async engine config
-    │   ├── config.py       # Pydantic BaseSettings
-    │   ├── database.py     # Supabase async engine via asyncpg
-    │   └── security.py     # Auth helper utilities
+    ├── core/               # App-wide settings and engine config
+    │   ├── config.py       # Pydantic BaseSettings (reads DATABASE_URL from env/.env)
+    │   ├── database.py     # SQLAlchemy sync engine → Supabase PostgreSQL
+    │   └── security.py     # Auth helper utilities (unused until auth phase)
     │
     ├── api/                # Global API logic
-    │   ├── dependencies.py # get_db, get_current_user (Supabase JWT verification)
+    │   ├── dependencies.py # get_db, get_current_user (dev-user stub — auth deferred)
     │   └── router.py       # Main router tying all modules together
     │
     └── modules/            # The Brains: Domain-Driven Modules

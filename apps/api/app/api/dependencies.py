@@ -10,9 +10,9 @@ def get_db(session: Session = Depends(get_session)) -> Session:
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
-# DEV MODE: The backend runs on local SQLite — no Supabase in the loop.
-# All endpoints return a fixed dev user so the Android app works without
-# any real login flow.
+# DEV MODE: The backend runs against Supabase PostgreSQL, but authentication is
+# deferred (see SRS §4.2). All endpoints return a fixed dev user so the Android
+# app works without any real login flow.
 #
 # TODO(production): Replace this stub with real Supabase JWT validation:
 #   from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials

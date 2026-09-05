@@ -15,5 +15,10 @@ data class RunSessionEntity(
     val caloriesBurned: Int,
     val capturedHexCount: Int,
     val capturedHexIdsJson: String, // Comma-separated or JSON string of hex IDs
-    val xpEarned: Int
+    val xpEarned: Int,
+    // False until the backend run-sync succeeded. While false, xpEarned holds
+    // the local provisional estimate; after a successful sync it holds the
+    // backend's authoritative value. No automatic retry is implemented —
+    // unsynced sessions simply stay in Room (offline gameplay preserved).
+    val isSynced: Boolean = false
 )

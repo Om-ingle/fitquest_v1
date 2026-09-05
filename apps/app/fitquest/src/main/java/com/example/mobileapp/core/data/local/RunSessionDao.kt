@@ -11,6 +11,9 @@ interface RunSessionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSession(session: RunSessionEntity)
 
+    @Query("UPDATE run_sessions SET xpEarned = :xpEarned, isSynced = 1 WHERE id = :sessionId")
+    suspend fun markSynced(sessionId: String, xpEarned: Int)
+
     @Query("SELECT * FROM run_sessions ORDER BY endedAt DESC")
     fun observeAllSessions(): Flow<List<RunSessionEntity>>
 

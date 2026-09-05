@@ -1,12 +1,16 @@
 package com.example.mobileapp.di
 
 import androidx.room.Room
+import com.example.mobileapp.BuildConfig
 import com.example.mobileapp.core.capture.HexCaptureEngine
 import com.example.mobileapp.core.data.local.FitQuestDatabase
 import com.example.mobileapp.core.data.local.HexRepository
 import com.example.mobileapp.core.data.local.RoomHexRepository
 import com.example.mobileapp.core.geo.HexIndexer
 import com.example.mobileapp.core.geo.UberH3HexIndexer
+import com.example.mobileapp.core.network.FitQuestApi
+import com.example.mobileapp.core.network.FitQuestApiClient
+import com.example.mobileapp.core.network.RunSyncer
 import com.example.mobileapp.core.sensors.LocationTrackingManager
 import com.example.mobileapp.core.sensors.StepSensorManager
 import com.example.mobileapp.features.capture.CaptureScreenModel
@@ -20,6 +24,7 @@ val appModule = module {
             FitQuestDatabase::class.java,
             "fitquest.db"
         )
+            .addMigrations(FitQuestDatabase.MIGRATION_2_3)
             .fallbackToDestructiveMigration()
             .build()
     }
@@ -50,10 +55,23 @@ val appModule = module {
 
     single { HexCaptureEngine(get(), get(), get(), get()) }
 
+    // Networking: Retrofit/OkHttp against the configurable backend URL.
+    // Android never sees DATABASE_URL or Supabase credentials, and the
+    // deferred-auth backend needs no auth headers for the dev user.
+    single<FitQuestApi> { FitQuestApiClient.create(BuildConfig.BACKEND_BASE_URL) }
+    single { RunSyncer(get()) }
+    single { com.example.mobileapp.core.network.LeaderboardFetcher(get()) }
+    single { com.example.mobileapp.core.network.MapTerritoryFetcher(get()) }
+    single { com.example.mobileapp.core.network.RecommendationFetcher(get()) }
+
     // factory (not single) so Voyager can properly scope and dispose the
     // ScreenModel when the screen leaves the backstack. A singleton would keep
     // the Orbit container alive forever and cause stale state on re-entry.
-    factory { CaptureScreenModel(get(), get(), get(), get(), get(), get(), get()) }
+    factory {
+        CaptureScreenModel(
+            get(), get(), get(), get(), get(), get(), get(), get(), get()
+        )
+    }
 }
 
 

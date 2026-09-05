@@ -10,6 +10,10 @@ import com.example.mobileapp.core.data.local.RunSessionRepository
 import com.example.mobileapp.core.data.local.UserProfileRepository
 import com.example.mobileapp.core.geo.HexGeoJsonMapper
 import com.example.mobileapp.core.geo.HexIndexer
+import com.example.mobileapp.core.network.MapTerritoryFetcher
+import com.example.mobileapp.core.network.RunSyncer
+import com.example.mobileapp.core.network.ViewportBounds
+import com.example.mobileapp.core.network.ViewportChangeDetector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -34,13 +38,25 @@ class CaptureScreenModel(
     private val userProfileRepository: UserProfileRepository,
     private val runSessionRepository: RunSessionRepository,
     private val questRepository: QuestRepository,
-    private val achievementRepository: AchievementRepository
+    private val achievementRepository: AchievementRepository,
+    private val runSyncer: RunSyncer,
+    private val mapTerritoryFetcher: MapTerritoryFetcher
 ) : ScreenModel, ContainerHost<CaptureState, Nothing> {
 
     private val screenModelScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val captureThresholdSteps = 1
     private var timerJob: Job? = null
     private var sessionStartTime: Long = 0L
+
+    // Shared-map viewport state
+    private var lastFetchedBounds: ViewportBounds? = null
+    private var sharedMapFetchJob: Job? = null
+
+    companion object {
+        // Mirror of the backend's MIN_DETAIL_ZOOM (apps/api map service):
+        // below this zoom the server returns an aggregated placeholder.
+        const val MIN_DETAIL_ZOOM = 14.0
+    }
 
     override val container = screenModelScope.container<CaptureState, Nothing>(CaptureState())
 
@@ -125,8 +141,11 @@ class CaptureScreenModel(
 
             hexCaptureEngine.stopTracking()
 
-            // Calculate XP: +50 per hex, +10 bonus per 100 steps
-            val xpEarned = (capturedHexes.size * 50) + ((totalSteps / 100) * 10) + 20
+            // The backend is the authority for competitive XP (50/new hex,
+            // 10/defended, 100/stolen — see the FastAPI run-sync service).
+            // This local formula is only a PROVISIONAL estimate shown when
+            // the backend is unreachable; a successful sync replaces it.
+            val provisionalXp = (capturedHexes.size * 50) + ((totalSteps / 100) * 10) + 20
 
             val session = RunSessionEntity(
                 id = UUID.randomUUID().toString(),
@@ -138,20 +157,42 @@ class CaptureScreenModel(
                 caloriesBurned = calories,
                 capturedHexCount = capturedHexes.size,
                 capturedHexIdsJson = capturedHexes.joinToString(","),
-                xpEarned = xpEarned
+                xpEarned = provisionalXp,
+                isSynced = false
             )
 
             screenModelScope.launch(Dispatchers.IO) {
-                // Save session locally
+                // Save the run locally FIRST so it survives even if the
+                // backend is unreachable (offline Room gameplay preserved).
                 runSessionRepository.saveSession(session)
 
-                // Update user profile stats & streak
+                // Then attempt the backend sync: run -> DTO -> FastAPI ->
+                // Supabase -> authoritative summary -> local reconciliation.
+                val hexesToSteps = finalStepsMap.filterValues { it >= captureThresholdSteps }
+                var finalSession = session
+                var syncSummary: com.example.mobileapp.core.network.models.RunSyncSummary? = null
+                when (val outcome = runSyncer.syncRun(totalSteps, hexesToSteps)) {
+                    is RunSyncer.SyncOutcome.Success -> {
+                        val authoritativeXp = outcome.summary.xp_earned
+                        runSessionRepository.markSynced(session.id, authoritativeXp)
+                        finalSession = session.copy(xpEarned = authoritativeXp, isSynced = true)
+                        syncSummary = outcome.summary
+                    }
+                    is RunSyncer.SyncOutcome.HttpError,
+                    is RunSyncer.SyncOutcome.NetworkError -> {
+                        // Keep the provisional estimate; the unsynced run
+                        // stays in Room. No automatic retry is implemented.
+                    }
+                }
+                val earnedXp = finalSession.xpEarned
+
+                // Update user profile stats & streak (XP reconciled above)
                 val updatedProfile = userProfileRepository.recordCompletedSession(
                     steps = totalSteps,
                     distanceMeters = distance,
                     calories = calories,
                     hexCount = capturedHexes.size,
-                    xp = xpEarned
+                    xp = earnedXp
                 )
 
                 // Update daily quests
@@ -177,7 +218,8 @@ class CaptureScreenModel(
                             isTracking = false,
                             isPaused = false,
                             showSummaryDialog = true,
-                            latestCompletedSession = session,
+                            latestCompletedSession = finalSession,
+                            syncSummary = syncSummary,
                             unlockedAchievements = unlocked
                         )
                     }
@@ -209,8 +251,80 @@ class CaptureScreenModel(
             state.copy(
                 showSummaryDialog = false,
                 latestCompletedSession = null,
+                syncSummary = null,
                 unlockedAchievements = emptyList()
             )
+        }
+    }
+
+    /**
+     * Called by the map when the camera settles (first style load + every
+     * camera-idle) with the visible bounds. Fetches server territory for the
+     * viewport, deduplicated by [ViewportChangeDetector]. A failure only
+     * flags [CaptureState.sharedMapFetchFailed] — it never crashes the run
+     * or blocks local tracking.
+     */
+    fun onViewportChanged(bounds: ViewportBounds) = intent {
+        // Mirror the backend: below MIN_DETAIL_ZOOM the response is an
+        // aggregated placeholder — clear the shared layers rather than
+        // pretending it contains detail hexes.
+        if (bounds.zoomLevel < MIN_DETAIL_ZOOM) {
+            reduce {
+                state.copy(
+                    multiplayerGeoJson = "",
+                    myServerHexesGeoJson = "",
+                    isFetchingSharedMap = false,
+                    sharedMapFetchFailed = false
+                )
+            }
+            return@intent
+        }
+
+        if (!ViewportChangeDetector.shouldFetch(lastFetchedBounds, bounds)) return@intent
+        lastFetchedBounds = bounds
+
+        sharedMapFetchJob?.cancel()
+        sharedMapFetchJob = screenModelScope.launch(Dispatchers.IO) {
+            intent { reduce { state.copy(isFetchingSharedMap = true) } }
+
+            when (val outcome = mapTerritoryFetcher.fetchViewport(bounds)) {
+                is MapTerritoryFetcher.Outcome.Success -> {
+                    // Split into my vs rival territory and build labeled
+                    // GeoJSON on this background thread (JNI work off UI).
+                    val mine = outcome.response.hexes.filter { it.is_owned_by_me }
+                    val rivals = outcome.response.hexes.filterNot { it.is_owned_by_me }
+                    val myGeoJson = if (mine.isEmpty()) "" else HexGeoJsonMapper.toLabeledGeoJsonString(
+                        hexIndexer, mine.associate { it.hex_id to "YOU" }
+                    )
+                    val rivalGeoJson = if (rivals.isEmpty()) "" else HexGeoJsonMapper.toLabeledGeoJsonString(
+                        hexIndexer, rivals.associate { it.hex_id to it.king_username }
+                    )
+
+                    // Wholesale replacement — no stale feature accumulation.
+                    intent {
+                        reduce {
+                            state.copy(
+                                multiplayerGeoJson = rivalGeoJson,
+                                myServerHexesGeoJson = myGeoJson,
+                                isFetchingSharedMap = false,
+                                sharedMapFetchFailed = false
+                            )
+                        }
+                    }
+                }
+                is MapTerritoryFetcher.Outcome.HttpError,
+                is MapTerritoryFetcher.Outcome.NetworkError -> {
+                    // Keep whatever was rendered before; surface the failure.
+                    intent {
+                        reduce {
+                            state.copy(
+                                isFetchingSharedMap = false,
+                                sharedMapFetchFailed = true
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -230,6 +344,7 @@ class CaptureScreenModel(
 
     override fun onDispose() {
         timerJob?.cancel()
+        sharedMapFetchJob?.cancel()
         hexCaptureEngine.stopTracking()
         screenModelScope.cancel()
     }
