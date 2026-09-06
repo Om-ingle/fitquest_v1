@@ -230,3 +230,102 @@
 - **Live defect found & fixed:** `gemini-2.5-flash` "thinks" by default and thinking tokens count toward `maxOutputTokens` — with the original 600 cap, live messages truncated mid-sentence. Fix in `app/modules/coach/llm.py`: `thinkingConfig: {thinkingBudget: 0}` + `maxOutputTokens: 1024`; re-verified live (294-char complete message).
 - **Test fallout fixed:** the 4C.1-era test `test_no_embedding_provider_is_configured_in_4c1` assumed no key in the environment; now hermetic via monkeypatch (renamed `test_no_embedding_provider_is_configured_without_a_key`).
 - **Result Status:** LIVE verification complete. Backend suite **160 passed**, synthetic-fitness tools **129 passed** (re-run after the llm.py fix). Both module READMEs updated to "verified" status. Phase 4C.2 Definition of Done fully met: real text query → embedded → relevant knowledge retrieved from live PostgreSQL/pgvector → LLM produced a grounded coaching response using real FitQuest context.
+
+## [2026-09-06] - Task: Phase 4C.3A — Coach Quality, Retrieval Evaluation & Backend Hardening
+
+- **Objective:** A tested retrieval-quality baseline for the live coach, an evidence-based similarity-threshold decision, scenario tests for all five FitnessContext branches, grounding/safety tests, a response-contract check, and a small honest live smoke evaluation. No Android, no TTS/WebSocket/Redis/auth, recommendation engine untouched, no Git operations, automated tests consume ZERO API credits.
+- **Modifications Matrix:**
+  - `apps/api/app/modules/rag/evaluation.py` (created: 10-query labeled evaluation set + Recall@k/hit-rate metrics + provider-injected runner; import-time self-validation; off-topic probe queries for threshold evidence)
+  - `apps/api/tools/evaluate_retrieval.py` (created: MANUAL live retrieval evaluation — one batched Gemini embedding call, read-only, prints per-query results + aggregates + off-topic raw scores)
+  - `apps/api/tools/evaluate_live_coach.py` (created: MANUAL live coach smoke — 5 synthetic scenario contexts + 1 real dev-user case through the real service entry point; 6 LLM calls + 2 embedding batches; never prints key/prompt; `--real-only` flag)
+  - `apps/api/tests/test_rag_evaluation.py` (created: 12 tests — metric math, query-set invariants, runner behavior incl. single-batch embedding)
+  - `apps/api/tests/test_coach_scenarios.py` (created: 7 tests — cold start / lapsed / defense / consistent / maintain through the REAL 4A machinery, recommendation authority, no invented data)
+  - `apps/api/tests/test_coach_grounding.py` (created: 8 tests — section separation, fallback honesty, API-key hygiene in success AND error paths, response contract fields, whitespace stripping, grounded-flag source)
+  - `apps/api/app/core/config.py` (modified: `rag_similarity_threshold` 0.30 → 0.50 with calibration rationale comment)
+  - `apps/api/.env-example`, `app/modules/rag/README.md`, `app/modules/coach/README.md` (modified: evaluation methodology, results, threshold decision, smoke observations, limitations)
+- **Decision Logic:**
+  - *Threshold recalibration (evidence-based, not arbitrary):* live probe of 13 queries showed on-topic chunk similarities 0.60–0.77 and clearly unrelated queries at raw 0.43–0.46 — the old 0.30 default sat below BOTH bands, admitting unrelated text as "knowledge". 0.50 sits mid-band with ~0.10 margin each side. Verified live: Recall@4 unchanged (1.00) under 0.50; coach-flow retrieval similarities (0.60–0.75) all clear it. Failure mode of too-high a threshold is the honest grounded=false fallback, not fabricated grounding.
+  - *Evaluation honesty:* query set and expected-document labels are developer-written against the project's own 6-doc corpus — documented as a project-level sanity evaluation, explicitly NOT a scientific benchmark and NOT real-user evidence. No subjective LLM quality converted into fake precise scores; smoke observations are qualitative.
+  - *TERRITORY_AT_RISK unreachability:* R3 cannot be produced by build_fitness_context from stored data (recent_captures_7d==0 forces last capture >7d old → R2 lapsed fires first). Scenario tested through the real recommend() engine with a constructed context; quirk documented rather than "fixed" (engine must not be changed in this phase).
+  - *Live smoke findings recorded honestly:* all 6 cases relevant/grounded/personalized/coherent/non-copying; minor quirk — messages sometimes repeat the prompt's "rules engine" phrasing; free-tier HTTP 429 observed when bursting 6 LLM calls back-to-back (surfaces as 502; single client calls unaffected).
+- **Result Status:** Backend suite **187 passed** (160 existing + 27 new, zero regressions); synthetic-fitness tools **129 passed**. Live retrieval evaluation run twice (pre/post threshold change): mean Recall@4 = 1.00, hit rate 1.00 (10/10) both times. Live coach smoke: 5/5 synthetic scenarios + real dev-user case grounded and complete. No project lint/type-check configuration exists (verified — only venv-internal configs); new scripts compile-checked. No key value ever printed; no Git operations.
+
+## [2026-09-06] - Task: Phase 4C.3B — Android AI Coach Integration & Real-Device Verification
+
+
+- **Objective:** Wire the live Phase 4C.2 backend coach (`GET /api/v1/coach` —
+  grounded LLM + pgvector RAG) into the existing Home-tab Coach card on Android
+  using the established conventions (Retrofit, Koin, DTOs, sealed fetcher
+  outcomes, Orbit/Compose state), then prove it on a real device across four
+  scenarios. Scope strictly Android coach integration + testing: no TTS /
+  WebSocket / Redis / auth / Web3; no Git operations; working Home features not
+  rewritten; backend AI architecture unchanged UNLESS a real Android
+  incompatibility demanded it. Mid-phase the Gemini free-tier daily quota was
+  exhausted, so (per explicit owner direction) an AgentRouter/DeepSeek fallback
+  LLM provider was added behind an `LLM_PROVIDER` env switch to keep live device
+  testing moving.
+- **Modifications Matrix:**
+  - *Android (integration, verified in this phase):*
+    `apps/app/fitquest/src/main/java/com/example/mobileapp/core/network/CoachFetcher.kt`
+    (created; sealed `Outcome: Success | HttpError(code) | NetworkError |
+    MalformedResponse`, mirrors `RecommendationFetcher`),
+    `core/network/models/FitQuestModels.kt` (CoachResponse/CoachRetrievalInfo
+    DTOs mirroring the backend schema; all-nullable + essential-field
+    validation because Gson bypasses Kotlin null-safety),
+    `core/network/FitQuestApi.kt` (GET coach), `di/AppModule.kt` (Koin
+    `single`), `ui/home/HomeTab.kt` (Coach card now stacks two independent
+    sections: unchanged Phase 4A recommendation + a new AI-advice block with its
+    own retry key and `produceState`, so a slow/failing AI call never blocks the
+    rest of Home), `test/.../CoachFetcherTest.kt` (created, 8 JVM tests) and the
+    4 existing `FakeApi` implementations extended with a `getCoach` override.
+  - *Backend (fallback LLM provider, added only so live testing could continue):*
+    `app/modules/coach/llm.py` (`AgentRouterLLMProvider` — OpenAI-compatible
+    `/chat/completions`, claude-cli User-Agent because agentrouter.org rejects
+    other UAs with 401; `get_llm_provider()` dispatches on `LLM_PROVIDER`),
+    `app/core/config.py` (`llm_provider` / `agentic_api_key` /
+    `agentrouter_base_url` / `agentrouter_model`),
+    `tests/test_coach_llm.py` (existing Gemini factory tests pinned to
+    `llm_provider=gemini` + ~12 agentrouter tests: factory dispatch, header
+    asserts incl. the UA, 401/error sanitization, malformed responses, timeout,
+    constructor key/base-url rejection), `apps/api/.env-example` (alternate
+    provider variable NAMES only, no values), `app/modules/coach/README.md` and
+    the `llm.py` module docstring (provider switch + gateway quirk + 4C.3B note).
+  - *Docs:* `docs/docs/ui/0002-android-coach-integration.md` (ADR, created;
+    decision record, DTO/fetcher/UI/test rationale, device results, addendum for
+    the DeepSeek/AgentRouter re-verification), `docs/docs/ui/evidence-4c3b/`
+    (test1-success / test2-failure / test3-retry / test4-personal screenshots +
+    `backend-access-2026-09-06.log`), this ledger entry.
+- **Decision Logic:**
+  - *Exact contract, nullable-by-design:* DTOs model only the fields the UI
+    needs; unmapped backend JSON (retrieval internals, per-chunk scores) is
+    ignored by Gson and can never surface or crash. Essential fields
+    (`message`, `recommendation`) validated before a `Success`.
+  - *No fake coaching text:* the backend is the single source of truth for
+    coaching messages. On any failure the app shows a graceful unavailable
+    state + manual **Retry** (retry-key bump) only — no local substitute text,
+    no polling, no automatic retries.
+  - *Independent sections:* recommendation and AI advice fetch independently, so
+    neither can block Home (steps/quests/map/profile/run banner).
+  - *Backend fallback over waiting:* rather than halt live testing on the Gemini
+    daily-quota 429, text generation switches to an OpenAI-compatible gateway
+    (`LLM_PROVIDER=agentrouter`, DeepSeek `deepseek-v4-flash`) while embeddings
+    stay on Gemini (`gemini-embedding-001` — separate quota, pgvector schema
+    frozen to 1536 dims). Gateway client filter (claude-cli UA) documented
+    in-code with the live 401/200 evidence.
+  - *Secrets hygiene:* no backend/Gemini/Supabase key exists anywhere in the
+    Android app; keys remain backend-`.env`-only.
+- **Result Status:** Backend suite **198 passed**; synthetic-fitness tools
+  **129 passed**; Android JVM suite all green incl. CoachFetcherTest **8/8**;
+  `:app:assembleDebug` succeeded (APK byte-identical by MD5 to the build already
+  on the device). Real-device verification **4/4 PASS** (Samsung RZ8R90661CF,
+  evidence in `docs/docs/ui/evidence-4c3b/`): (1) SUCCESS — a real grounded
+  coach message rendered in-app with the grounding chip; (2) BACKEND FAILURE —
+  backend down: graceful offline state + Retry, no crash, every other Home
+  feature intact on local Room data; (3) RETRY — backend back up, manual Retry
+  tap produced a fresh live message; (4) PERSONALIZATION — coaching tracked the
+  live dev-user context (cold-start 0 steps → STARTER; after a 3,000-step sync
+  flip → RECOVERY "Get back out there / 2,000-step goal"; reset to 0 restored
+  STARTER). Live LLM during re-verification ran through **AgentRouter → DeepSeek
+  (deepseek-v4-flash)** because the Gemini 2.5-flash free-tier daily quota was
+  exhausted on 2026-09-06 (confirmed HTTP 429); embeddings stayed Gemini.
+  No Git operations performed; no key values printed; TTS not started.

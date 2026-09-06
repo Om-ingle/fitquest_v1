@@ -61,6 +61,7 @@ import com.example.mobileapp.core.data.local.RunSessionEntity
 import com.example.mobileapp.core.data.local.RunSessionRepository
 import com.example.mobileapp.core.data.local.UserProfileEntity
 import com.example.mobileapp.core.data.local.UserProfileRepository
+import com.example.mobileapp.core.network.CoachFetcher
 import com.example.mobileapp.core.network.RecommendationFetcher
 import com.example.mobileapp.core.network.models.Recommendation
 import com.example.mobileapp.ui.capture.CurrentRunScreen
@@ -92,6 +93,7 @@ object HomeTab : Tab {
         val runSessionRepo = koinInject<RunSessionRepository>()
         val hexRepo = koinInject<HexRepository>()
         val recommendationFetcher = koinInject<RecommendationFetcher>()
+        val coachFetcher = koinInject<CoachFetcher>()
 
         LaunchedEffect(Unit) {
             questRepo.ensureTodayQuests()
@@ -106,6 +108,19 @@ object HomeTab : Tab {
             key1 = coachRetryKey
         ) {
             value = recommendationFetcher.fetchRecommendation()
+        }
+
+        // Grounded AI coach message (Phase 4C.2 backend, Phase 4C.3B
+        // integration). Independent of the rules-engine recommendation
+        // above: its own retry key, its own produceState — a slow or
+        // failing AI call never blocks the recommendation card or any
+        // other Home content, and there is no polling or auto-retry.
+        var aiCoachRetryKey by remember { mutableIntStateOf(0) }
+        val aiCoachOutcome by produceState<CoachFetcher.Outcome?>(
+            initialValue = null,
+            key1 = aiCoachRetryKey
+        ) {
+            value = coachFetcher.fetchCoachMessage()
         }
 
         val profileState by userProfileRepo.observeProfile().collectAsState(initial = null)
@@ -150,7 +165,9 @@ object HomeTab : Tab {
             item {
                 CoachCard(
                     outcome = coachOutcome,
-                    onRetry = { coachRetryKey++ }
+                    onRetry = { coachRetryKey++ },
+                    aiOutcome = aiCoachOutcome,
+                    onAiRetry = { aiCoachRetryKey++ }
                 )
             }
 
@@ -345,10 +362,21 @@ private fun StartRunActionBanner(onStartRun: () -> Unit) {
     }
 }
 
+/**
+ * Coach card, two stacked sections:
+ * 1. Rules-engine recommendation (Phase 4A) — unchanged behavior.
+ * 2. Grounded AI message (Phase 4C.3B) — rendered independently of the
+ *    recommendation outcome, so a slow/failed AI call never hides the
+ *    recommendation and vice versa. Only user-facing fields are shown
+ *    (message + a grounded/fallback chip); retrieval internals (scores,
+ *    query text, sources) are never surfaced.
+ */
 @Composable
 private fun CoachCard(
     outcome: RecommendationFetcher.Outcome?,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    aiOutcome: CoachFetcher.Outcome?,
+    onAiRetry: () -> Unit
 ) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -453,6 +481,92 @@ private fun CoachCard(
                             modifier = Modifier.weight(1f)
                         )
                         TextButton(onClick = onRetry) {
+                            Text("Retry")
+                        }
+                    }
+                }
+            }
+
+            // --- Grounded AI coach section (Phase 4C.3B) ---
+            Spacer(modifier = Modifier.height(12.dp))
+            when (aiOutcome) {
+                // Loading: lightweight row, never blocks the card above.
+                null -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "✨ Coach is writing your personal advice…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                is CoachFetcher.Outcome.Success -> {
+                    val response = aiOutcome.response
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "✨ Personal advice",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        // Honest grounding indicator: grounded=true means the
+                        // message drew on retrieved fitness knowledge;
+                        // grounded=false is the backend's flagged
+                        // general-guidance fallback. No retrieval internals
+                        // (scores, query text, sources) are ever shown.
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                        ) {
+                            Text(
+                                text = if (response.grounded == true) {
+                                    "📚 Grounded in fitness knowledge"
+                                } else {
+                                    "💡 General guidance"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // Real Gemini-generated text from the backend only —
+                    // CoachFetcher guarantees this is non-blank.
+                    Text(
+                        text = response.message.orEmpty(),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                // Error: small, non-intrusive; no fake coaching text is ever
+                // substituted. Manual Retry only — no polling or auto-retry.
+                is CoachFetcher.Outcome.HttpError,
+                is CoachFetcher.Outcome.NetworkError,
+                is CoachFetcher.Outcome.MalformedResponse -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "✨ AI tip unavailable",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onAiRetry) {
                             Text("Retry")
                         }
                     }

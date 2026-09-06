@@ -1,4 +1,4 @@
-# RAG Knowledge Base (Phases 4C.1 + 4C.2)
+# RAG Knowledge Base (Phases 4C.1 + 4C.2 + 4C.3A)
 
 > **What exists here:** the database schema (pgvector), deterministic
 > chunking, a REAL embedding provider (Gemini), a small curated fitness
@@ -117,13 +117,12 @@ descending with a deterministic `(document_id, chunk_index)` tie-break.
 Filters: exact `source` match on the document; `metadata_filters` as
 subset containment on chunk metadata (JSONB `@>` on PostgreSQL).
 
-**Minimum-similarity threshold (4C.2):** chunks scoring below
-`min_similarity` are dropped — before top_k truncation, so a filtered
+**Minimum-similarity threshold (4C.2, recalibrated 4C.3A):** chunks scoring
+below `min_similarity` are dropped — before top_k truncation, so a filtered
 result may contain fewer than `top_k` chunks (including zero). Unrelated
 chunks are never silently returned. The coach flow uses the
-`RAG_SIMILARITY_THRESHOLD` setting (default `0.30`, a conservative
-default — calibration against real corpus embeddings is pending a live
-key + ingested corpus).
+`RAG_SIMILARITY_THRESHOLD` setting (default **0.50**, calibrated against
+the live corpus on 2026-09-06 — see *Retrieval quality evaluation* below).
 
 `retrieve_chunks_for_text(db, query_text, provider, ...)` — the full
 text → embedding → search flow used by the coach service: it embeds the
@@ -174,12 +173,63 @@ suite (tests ingest fixture documents with fixture providers).
 (SRS §4.2; every caller is currently the dev user), so administrative
 ingestion is not exposed over HTTP. Ingestion is the CLI above.
 
-## What is intentionally deferred to 4C.3
+## Retrieval quality evaluation (Phase 4C.3A)
 
-- Calibration of the similarity threshold against real corpus embeddings.
+[evaluation.py](evaluation.py) holds a fixed query set of **10
+representative coaching queries** (cold start / beginner, walking
+consistency, gradual progression, recovery/rest, weekly activity guidance,
+inactive-lapsed return, motivation, general safe activity, soreness after
+a return, everyday-activity counting), each labeled with the corpus
+documents a reviewer expects retrieval to surface, plus simple metrics:
+per-query **Recall@k** and **hit rate**. The manual tool
+`tools/evaluate_retrieval.py` runs the set live (real Gemini embeddings —
+ONE batched call — against the ingested Supabase corpus, read-only) and
+also probes a few clearly off-topic queries with no threshold to expose
+raw similarity scores.
+
+### Results (live run, 2026-09-06, gemini-embedding-001 @ 1536 dims)
+
+- **mean Recall@4 = 1.00, hit rate = 1.00 (10/10 queries)** at
+  `top_k=4`: every expected document appeared in the top 4 for every
+  query.
+- On-topic chunk similarities ranged **0.60–0.77** (the expected document
+  was the top-ranked chunk for every query).
+- Off-topic probes (sourdough baking, quantum computing, used-car buying)
+  scored raw **0.43–0.46** against the fitness corpus.
+
+### Threshold decision: 0.30 → 0.50
+
+The original 0.30 default was uncalibrated. The live probe showed a clean
+empty band between unrelated text (≤ 0.46) and on-topic retrieval
+(≥ 0.60); 0.30 sat below BOTH, i.e. it admitted clearly unrelated text as
+"knowledge". **0.50** sits mid-band with ~0.10 margin on each side:
+every on-topic chunk observed stays above it (verified by re-running the
+evaluation under 0.50 — Recall@4 unchanged at 1.00), and every off-topic
+probe falls below it. The failure mode of a too-high threshold is the
+honest `grounded=false` fallback, not fabricated grounding — so erring
+toward the middle of the band is the safe side. This is calibration on 13
+developer-written queries, not optimization against one lucky response.
+
+### Honesty / limitations
+
+- **This is a small project-level sanity evaluation, not a scientific
+  benchmark.** The queries and expected-document labels were written by
+  the project's developers against the project's own 6-document corpus.
+  Recall@4 = 1.00 means "retrieval surfaces the documents we expect for
+  the queries we expect users to ask" — it is NOT real-user evidence and
+  NOT population-level performance.
+- Absolute similarity scores can drift if the embedding model is
+  retrained upstream; the recorded numbers are a snapshot. The threshold
+  has ~0.10 margin on both sides, so small drift is tolerated.
+- With only 6 documents / 1 chunk each, top-4 retrieval saturates the
+  corpus — the metric will get harder (and more meaningful) as the corpus
+  grows. Re-run `tools/evaluate_retrieval.py` after any corpus change.
+
+## What is intentionally deferred (beyond 4C.3A)
+
 - Per-chunk metadata (section titles, per-chunk topics).
 - Corpus growth/curation tooling beyond the fixed curated set.
-- Retrieval quality evaluation (recall@k against a labeled query set).
+- Retrieval evaluation over real user queries (requires real traffic).
 
 ## Limitations
 

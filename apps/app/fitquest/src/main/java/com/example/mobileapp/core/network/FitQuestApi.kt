@@ -1,5 +1,6 @@
 package com.example.mobileapp.core.network
 
+import com.example.mobileapp.core.network.models.CoachResponse
 import com.example.mobileapp.core.network.models.LeaderboardResponse
 import com.example.mobileapp.core.network.models.MapViewportResponse
 import com.example.mobileapp.core.network.models.RecommendationResponse
@@ -33,4 +34,8 @@ interface FitQuestApi {
 
     @GET("api/v1/recommendations")
     suspend fun getRecommendations(): RecommendationResponse
+
+    /** Grounded AI coaching (Gemini + RAG) for the current dev user. */
+    @GET("api/v1/coach")
+    suspend fun getCoach(): CoachResponse
 }

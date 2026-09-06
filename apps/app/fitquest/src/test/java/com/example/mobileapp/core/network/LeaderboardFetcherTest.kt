@@ -51,6 +51,9 @@ class LeaderboardFetcherTest {
         override suspend fun getRecommendations():
             com.example.mobileapp.core.network.models.RecommendationResponse =
             throw UnsupportedOperationException()
+
+        override suspend fun getCoach(): com.example.mobileapp.core.network.models.CoachResponse =
+            throw UnsupportedOperationException()
     }
 
     @Test

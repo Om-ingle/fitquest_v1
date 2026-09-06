@@ -98,3 +98,28 @@ data class RecommendationResponse(
     val context: FitnessContextResponse,
     val recommendation: Recommendation
 )
+
+// AI coach (backend Phase 4C.2, GET /api/v1/coach — Android integration
+// Phase 4C.3B). Models the ACTUAL backend CoachResponse — no invented
+// fields. Retrieval metadata is modeled minimally: the backend also returns
+// per-chunk similarity scores, the raw query text and chunk sources, but
+// those are developer/debug concerns and are deliberately NOT modeled
+// (Gson ignores unmapped JSON fields), so they can never reach the UI.
+//
+// Fields are nullable on purpose: Gson bypasses Kotlin null-safety when a
+// field is missing from the JSON, so [CoachFetcher] validates the essential
+// ones (message, recommendation) and maps shape violations to
+// MalformedResponse instead of letting an NPE reach the UI.
+
+data class CoachRetrievalInfo(
+    val retrieved_count: Int? = null
+)
+
+data class CoachResponse(
+    val generated_at: String? = null,
+    val message: String? = null,
+    val grounded: Boolean? = null,
+    val context: FitnessContextResponse? = null,
+    val recommendation: Recommendation? = null,
+    val retrieval: CoachRetrievalInfo? = null
+)

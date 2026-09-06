@@ -28,10 +28,26 @@ class Settings(BaseSettings):
     embedding_timeout_seconds: float = 30.0
     llm_timeout_seconds: float = 30.0
 
-    # Retrieval/coach tuning (Phase 4C.2). The similarity threshold is a
-    # conservative default; calibrating it against real corpus embeddings is
-    # deferred (see rag/README.md limitations).
-    rag_similarity_threshold: float = 0.30
+    # ── AI provider selection (Phase 4C.3B device-test fallback) ─────────
+    # Which LLM generates the coach text. `gemini` (default) or
+    # `agentrouter` — an OpenAI-compatible gateway (e.g. DeepSeek) behind
+    # the AGENTIC_API_KEY + AGENTROUTER_BASE_URL pair. Embeddings stay on
+    # Gemini (gemini-embedding-001) in BOTH modes: the pgvector schema is
+    # frozen to 1536 dims and embedding quota is separate from text
+    # generation. See app/modules/coach/llm.py `get_llm_provider()`.
+    llm_provider: str = "gemini"
+    agentic_api_key: str | None = None
+    agentrouter_base_url: str | None = None
+    agentrouter_model: str = "deepseek-v4-flash"
+
+    # Retrieval/coach tuning (Phase 4C.2; threshold recalibrated 4C.3A).
+    # 0.50 from the 2026-09-06 live calibration probe (13 queries against
+    # the real corpus): on-topic chunk similarities 0.60-0.77, clearly
+    # unrelated queries 0.43-0.46 — an empty band 0.50 sits in the middle
+    # of, ~0.10 margin on each side. See rag/README.md "Retrieval quality
+    # evaluation". Too-high a threshold degrades to the honest
+    # grounded=false fallback; too-low admits unrelated text as knowledge.
+    rag_similarity_threshold: float = 0.50
     coach_top_k: int = 4
 
     # Look for .env next to the API first, then at the repository root, so the

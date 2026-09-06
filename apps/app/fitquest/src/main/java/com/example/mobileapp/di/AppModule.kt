@@ -63,6 +63,7 @@ val appModule = module {
     single { com.example.mobileapp.core.network.LeaderboardFetcher(get()) }
     single { com.example.mobileapp.core.network.MapTerritoryFetcher(get()) }
     single { com.example.mobileapp.core.network.RecommendationFetcher(get()) }
+    single { com.example.mobileapp.core.network.CoachFetcher(get()) }
 
     // factory (not single) so Voyager can properly scope and dispose the
     // ScreenModel when the screen leaves the backstack. A singleton would keep

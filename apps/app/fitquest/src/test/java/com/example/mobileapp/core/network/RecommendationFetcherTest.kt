@@ -58,6 +58,9 @@ class RecommendationFetcherTest {
             throw UnsupportedOperationException()
 
         override suspend fun getRecommendations() = behavior()
+
+        override suspend fun getCoach(): com.example.mobileapp.core.network.models.CoachResponse =
+            throw UnsupportedOperationException()
     }
 
     @Test
