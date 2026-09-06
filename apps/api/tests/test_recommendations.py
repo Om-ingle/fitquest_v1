@@ -222,6 +222,12 @@ def test_endpoint_empty_db_is_cold_start(client):
         "recent_captures_7d": 0,
         "last_capture_at": None,
         "total_defense_steps": 0,
+        "activity_date": None,
+        "steps_today": None,
+        "active_minutes_today": None,
+        "goal_steps": None,
+        "goal_completed_today": None,
+        "goal_progress_ratio": None,
     }
     assert body["recommendation"]["type"] == "STARTER"
     assert body["recommendation"]["reason_code"] == "COLD_START"

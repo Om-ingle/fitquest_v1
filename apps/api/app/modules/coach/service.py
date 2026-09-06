@@ -32,6 +32,7 @@ from typing import Optional
 from sqlmodel import Session
 
 from app.core.config import settings
+from app.modules.coach.cache import CoachCache, context_fingerprint
 from app.modules.coach.llm import LLMProvider
 from app.modules.coach.prompt import build_coaching_prompt, build_retrieval_query
 from app.modules.coach.schemas import ChunkSummary, CoachResponse, RetrievalInfo
@@ -58,22 +59,42 @@ def generate_coaching(
     llm_provider: LLMProvider,
     top_k: Optional[int] = None,
     min_similarity: Optional[float] = None,
+    cache: Optional[CoachCache] = None,
 ) -> CoachResponse:
-    """Run the full grounded coaching flow for one user."""
+    """Run the full grounded coaching flow for one user.
+
+    ``cache`` (Fix E) is optional so direct-service tests can opt out. When
+    provided and the user's freshly-built context fingerprint matches a
+    stored generation, that stored response is returned with ``cached=True``
+    and NO LLM/RAG work happens. The context is rebuilt fresh on EVERY call
+    — a cache hit is decided against current data, never against a stored
+    stale context. Failures are never cached: only a validated response is
+    stored, so a Retry after an error always reaches the LLM.
+    """
     if top_k is None:
         top_k = settings.coach_top_k
     if min_similarity is None:
         min_similarity = settings.rag_similarity_threshold
 
-    # 1-2. Real context + deterministic recommendation (Phase 4A, reused).
+    # 1. Real context — built fresh every call (never a stored value).
     context: FitnessContext = build_fitness_context(db, user_id)
+    fingerprint = context_fingerprint(context)
+
+    # 2. Fix E: same user + same context fingerprint → serve the stored
+    #    generation unchanged (no recommendation/embedding/LLM work at all).
+    if cache is not None:
+        cached = cache.get_cached(user_id, fingerprint)
+        if cached is not None:
+            return cached.model_copy(update={"cached": True})
+
+    # 3. Deterministic recommendation (Phase 4A, reused).
     recommendation: Recommendation = recommend(context)
 
-    # 3. Topical query, embedded by the injected provider.
+    # 4. Topical query, embedded by the injected provider.
     query_text = build_retrieval_query(context, recommendation)
     query_embedding = embedding_provider.embed_texts([query_text])[0]
 
-    # 4. Knowledge above the similarity threshold (never unrelated chunks).
+    # 5. Knowledge above the similarity threshold (never unrelated chunks).
     chunks: list[RetrievedChunk] = retrieve_chunks(
         db,
         query_embedding=query_embedding,
@@ -81,11 +102,11 @@ def generate_coaching(
         min_similarity=min_similarity,
     )
 
-    # 5-6. Grounded prompt, then the LLM.
+    # 6-7. Grounded prompt, then the LLM.
     prompt = build_coaching_prompt(context, recommendation, chunks)
     message = llm_provider.generate(prompt)
 
-    # 7. Validate before returning.
+    # 8. Validate before returning/storing.
     message = message.strip()
     if not message:
         raise CoachValidationError("LLM returned an empty coaching message")
@@ -94,7 +115,7 @@ def generate_coaching(
             f"LLM coaching message exceeds {MAX_MESSAGE_CHARS} characters"
         )
 
-    return CoachResponse(
+    response = CoachResponse(
         generated_at=datetime.datetime.utcnow(),
         message=message,
         grounded=bool(chunks),
@@ -115,4 +136,11 @@ def generate_coaching(
                 for chunk in chunks
             ],
         ),
+        context_fingerprint=fingerprint,
     )
+
+    # Only a fully validated response is cached — an error above never
+    # leaves a stale entry behind.
+    if cache is not None:
+        cache.store(user_id, fingerprint, response)
+    return response

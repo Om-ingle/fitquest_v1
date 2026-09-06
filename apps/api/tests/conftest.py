@@ -16,11 +16,16 @@ from sqlmodel import SQLModel  # noqa: E402
 
 from app.core.database import engine  # noqa: E402
 from app.main import app  # noqa: E402
+from app.modules.coach.cache import coach_cache  # noqa: E402
 
 
 @pytest.fixture()
 def client():
+    # The coach cache is a process-global singleton (shared by the router);
+    # clear it with the DB so a cached response never leaks across tests.
+    coach_cache.clear()
     SQLModel.metadata.create_all(engine)
     with TestClient(app) as test_client:
         yield test_client
     SQLModel.metadata.drop_all(engine)
+    coach_cache.clear()

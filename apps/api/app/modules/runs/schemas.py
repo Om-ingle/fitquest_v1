@@ -73,6 +73,11 @@ class RunSyncPayload(BaseModel):
     # Maps hex_id -> steps_walked_in_hex
     hexes_to_steps: Dict[str, int]
     daily_activity: Optional[DailyActivitySnapshot] = None
+    # Optional stable run/session id (Fix A replay guard). New Android builds
+    # send the local session id so a retried sync is recognised as already
+    # applied instead of double-crediting. Older clients omit it and behaviour
+    # is exactly as before.
+    run_id: Optional[str] = None
 
 
 class RunSyncSummary(BaseModel):
@@ -85,3 +90,7 @@ class RunSyncSummary(BaseModel):
     hexes_newly_captured: int  # Unclaimed hexes now captured
     xp_earned: int
     new_total_lifetime_steps: int
+    # True when the payload carried a run_id that this user had already synced.
+    # No credit was applied; the client should keep its existing local XP value
+    # rather than overwriting it with the zeroed xp_earned above.
+    already_processed: bool = False

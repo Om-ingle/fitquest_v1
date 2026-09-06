@@ -182,7 +182,13 @@ class AgentRouterLLMProvider:
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.4,
-            "max_tokens": 1024,
+            # deepseek-v4-flash is a reasoning model: its chain-of-thought
+            # (reasoning_content) consumes most of the output budget, so a
+            # 1024-token cap truncated the visible content or returned it
+            # empty (verified live 2026-09-06: the real 1k-token coaching
+            # prompt used ~1800 output tokens — 936+ reasoning — before the
+            # answer). 4096 leaves room for the CoT plus a full message.
+            "max_tokens": 4096,
         }
         try:
             response = httpx.post(

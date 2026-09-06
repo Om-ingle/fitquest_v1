@@ -18,7 +18,14 @@ data class RunSessionEntity(
     val xpEarned: Int,
     // False until the backend run-sync succeeded. While false, xpEarned holds
     // the local provisional estimate; after a successful sync it holds the
-    // backend's authoritative value. No automatic retry is implemented —
-    // unsynced sessions simply stay in Room (offline gameplay preserved).
-    val isSynced: Boolean = false
+    // backend's authoritative value. Unsynced sessions stay in Room (offline
+    // gameplay preserved) and are replayed by RunReconciler on the next
+    // foreground (Fix A).
+    val isSynced: Boolean = false,
+    // The exact outbound RunSyncPayload JSON (incl. run_id = this session's
+    // id), persisted BEFORE the first sync attempt so a later retry replays
+    // byte-identical data. Null for legacy rows created before this column
+    // existed — RunReconciler best-effort reconstructs those instead. Cleared
+    // by markSynced once the server confirms the sync.
+    val pendingSyncPayloadJson: String? = null
 )

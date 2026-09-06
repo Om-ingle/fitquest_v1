@@ -42,6 +42,12 @@ class CoachResponse(BaseModel):
     ``grounded`` is True only when the LLM was given retrieved knowledge;
     when retrieval found nothing above the threshold the response is a
     flagged general-guidance fallback (see coach/service.py).
+
+    Fix E cache fields: ``context_fingerprint`` is the deterministic digest
+    of the ``context`` this response was grounded in, and ``cached`` is
+    True when the response was served from the coach cache (no new LLM
+    call). Together with ``context``/``recommendation``/``retrieval`` they
+    make every served response — fresh or cached — auditable.
     """
 
     generated_at: datetime
@@ -50,3 +56,5 @@ class CoachResponse(BaseModel):
     context: FitnessContext
     recommendation: Recommendation
     retrieval: RetrievalInfo
+    context_fingerprint: str
+    cached: bool = False

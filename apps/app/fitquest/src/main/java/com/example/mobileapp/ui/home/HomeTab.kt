@@ -41,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,10 +62,12 @@ import com.example.mobileapp.core.data.local.RunSessionEntity
 import com.example.mobileapp.core.data.local.RunSessionRepository
 import com.example.mobileapp.core.data.local.UserProfileEntity
 import com.example.mobileapp.core.data.local.UserProfileRepository
+import com.example.mobileapp.core.network.CoachCache
 import com.example.mobileapp.core.network.CoachFetcher
 import com.example.mobileapp.core.network.RecommendationFetcher
 import com.example.mobileapp.core.network.models.Recommendation
 import com.example.mobileapp.ui.capture.CurrentRunScreen
+import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -93,7 +96,8 @@ object HomeTab : Tab {
         val runSessionRepo = koinInject<RunSessionRepository>()
         val hexRepo = koinInject<HexRepository>()
         val recommendationFetcher = koinInject<RecommendationFetcher>()
-        val coachFetcher = koinInject<CoachFetcher>()
+        val coachCache = koinInject<CoachCache>()
+        val scope = rememberCoroutineScope()
 
         LaunchedEffect(Unit) {
             questRepo.ensureTodayQuests()
@@ -111,17 +115,20 @@ object HomeTab : Tab {
         }
 
         // Grounded AI coach message (Phase 4C.2 backend, Phase 4C.3B
-        // integration). Independent of the rules-engine recommendation
-        // above: its own retry key, its own produceState — a slow or
-        // failing AI call never blocks the recommendation card or any
-        // other Home content, and there is no polling or auto-retry.
-        var aiCoachRetryKey by remember { mutableIntStateOf(0) }
-        val aiCoachOutcome by produceState<CoachFetcher.Outcome?>(
-            initialValue = null,
-            key1 = aiCoachRetryKey
-        ) {
-            value = coachFetcher.fetchCoachMessage()
+        // integration). Driven by the singleton CoachCache (Fix E): the last
+        // successful response is shown immediately on every Home entry and NO
+        // network request is made while the device's synced-run telemetry is
+        // unchanged — a fresh request happens only when a new run was synced
+        // (the device-side sign that the backend's context fingerprint may
+        // have changed) or when nothing is cached yet. Retry ([refresh])
+        // still works after a real failure. Independent of the rules-engine
+        // recommendation above — the same visual contract as before (loading
+        // / message / error+Retry) so the card and grounded chip are
+        // unchanged.
+        LaunchedEffect(Unit) {
+            coachCache.ensureLoaded()
         }
+        val aiCoachOutcome by coachCache.state.collectAsState(initial = null)
 
         val profileState by userProfileRepo.observeProfile().collectAsState(initial = null)
         val profile = profileState ?: UserProfileEntity()
@@ -167,7 +174,7 @@ object HomeTab : Tab {
                     outcome = coachOutcome,
                     onRetry = { coachRetryKey++ },
                     aiOutcome = aiCoachOutcome,
-                    onAiRetry = { aiCoachRetryKey++ }
+                    onAiRetry = { scope.launch { coachCache.refresh() } }
                 )
             }
 

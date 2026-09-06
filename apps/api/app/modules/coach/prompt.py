@@ -70,6 +70,32 @@ def build_coaching_prompt(
         last_capture = context.last_capture_at.isoformat()
     else:
         last_capture = "never"
+
+    # Daily-activity telemetry (Fix E). The date travels WITH the numbers so
+    # the model phrases them honestly even when the latest report is not
+    # literally today (server-UTC vs device-local dates differ).
+    if context.activity_date is not None:
+        activity_lines = [
+            f"- Device-reported activity on {context.activity_date.isoformat()}: "
+            f"{context.steps_today} steps, {context.active_minutes_today} active minutes"
+        ]
+        if context.goal_steps is not None:
+            if context.goal_completed_today:
+                goal_status = "COMPLETED"
+            elif context.goal_progress_ratio is not None:
+                goal_status = f"{context.goal_progress_ratio:.0%} reached"
+            else:
+                goal_status = "not reached"
+            activity_lines.append(
+                f"- Daily step goal for that day: {context.goal_steps} "
+                f"({goal_status})"
+            )
+    else:
+        activity_lines = [
+            "- Device-reported daily activity: none yet (no telemetry reported)"
+        ]
+    activity_section = "\n".join(activity_lines)
+
     context_section = (
         "FitQuest user context (all values are real backend data):\n"
         f"- Total lifetime steps recorded: {context.total_lifetime_steps}\n"
@@ -77,6 +103,7 @@ def build_coaching_prompt(
         f"- Hexes captured in the last 7 days: {context.recent_captures_7d}\n"
         f"- Last territory capture: {last_capture}\n"
         f"- Total steps invested in territory defense: {context.total_defense_steps}\n"
+        f"{activity_section}\n"
         f"- Current recommendation from the rules engine: "
         f"\"{recommendation.title}\" — {recommendation.description} "
         f"(goal: {recommendation.target_value} {recommendation.target_metric})"

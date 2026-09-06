@@ -1,0 +1,14 @@
+✕
+ACTIVE RUN
+17:45
+Steps
+449
+Distance
+0.34 km
+Calories
+17 kcal
+Hexes
++1
+Current Hex: 8a609616
+Pause
+Stop & Finish

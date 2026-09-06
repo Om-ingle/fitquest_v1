@@ -198,11 +198,12 @@ def test_error_response_does_not_leak_the_api_key(client, monkeypatch):
 
 def test_coach_response_contract_fields_are_exactly_this_set():
     """The wire contract is intentionally small: message, grounded flag,
-    generation time, the real context, the recommendation, and retrieval
-    metadata. Nothing else (no prompt, no provider details)."""
+    generation time, the real context, the recommendation, retrieval
+    metadata, and the Fix E audit fields (context fingerprint + cached
+    flag). Nothing else (no prompt, no provider details)."""
     assert set(CoachResponse.model_fields) == {
         "generated_at", "message", "grounded", "context", "recommendation",
-        "retrieval",
+        "retrieval", "context_fingerprint", "cached",
     }
     from app.modules.coach.schemas import RetrievalInfo
 

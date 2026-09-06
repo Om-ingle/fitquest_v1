@@ -1,0 +1,13 @@
+✕
+STANDBY
+00:00
+Steps
+0
+Distance
+0.00 km
+Calories
+0 kcal
+Hexes
++0
+Current Hex: 8a609616
+Start Capture

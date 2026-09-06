@@ -101,6 +101,39 @@ class HexCaptureEngine(
             )
         }
 
+        startStepsCollection()
+    }
+
+    /**
+     * Restarts step collection for a run recovered from a Room checkpoint,
+     * seeding the session counters with the checkpoint's values so partial
+     * steps/territory captured before a process death are not lost. This is
+     * intentionally separate from [startTracking], which begins a fresh run at
+     * zero. A no-op if the engine is already tracking (live session wins).
+     */
+    fun resumeTracking(
+        initialSessionSteps: Int,
+        initialHexesToSteps: Map<String, Int>
+    ) {
+        if (_state.value.isTracking) return
+
+        _state.update { snapshot ->
+            val seeded = initialHexesToSteps.toMutableMap()
+            snapshot.currentHexId?.let { hexId ->
+                if (!seeded.containsKey(hexId)) seeded[hexId] = 0
+            }
+            snapshot.copy(
+                isTracking = true,
+                sessionSteps = initialSessionSteps.coerceAtLeast(0),
+                hexesToSteps = seeded
+            )
+        }
+
+        startStepsCollection()
+    }
+
+    private fun startStepsCollection() {
+        stepsJob?.cancel()
         stepsJob = scope.launch {
             stepSensorManager.observeStepDeltas().collect { delta ->
                 _state.update { snapshot ->

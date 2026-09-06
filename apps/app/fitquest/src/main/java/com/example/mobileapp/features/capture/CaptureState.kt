@@ -1,6 +1,7 @@
 package com.example.mobileapp.features.capture
 
 import com.example.mobileapp.core.data.local.AchievementEntity
+import com.example.mobileapp.core.data.local.ActiveRunEntity
 import com.example.mobileapp.core.data.local.RunSessionEntity
 import com.example.mobileapp.core.model.GeoPoint
 import com.example.mobileapp.core.network.models.RunSyncSummary
@@ -17,6 +18,11 @@ data class CaptureState(
     val sessionCapturedHexes: List<String> = emptyList(),
     val historicalCapturedHexes: List<String> = emptyList(),
     val allCapturedHexes: List<String> = emptyList(),
+
+    // Non-null when a Room checkpoint was found on entry but the capture
+    // engine is not live (process death): the user must Resume or Discard.
+    // See CaptureScreenModel.onResumeRecovery / onDiscardRecovery.
+    val pendingRecovery: ActiveRunEntity? = null,
 
     // Post-Run Dialog State
     val showSummaryDialog: Boolean = false,

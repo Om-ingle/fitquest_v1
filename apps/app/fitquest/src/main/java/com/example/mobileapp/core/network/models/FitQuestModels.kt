@@ -6,7 +6,11 @@ data class RunSyncPayload(
     // Phase 4B.5 daily telemetry (optional; older payloads simply omit it —
     // Gson skips null fields). Absolute day-to-date values so a repeated
     // sync of the same day is idempotent server-side.
-    val daily_activity: DailyActivitySnapshot? = null
+    val daily_activity: DailyActivitySnapshot? = null,
+    // Stable run/session id (Fix A replay guard). Persisted with this payload
+    // before the first sync so a later retry replays byte-identical data, and
+    // the backend recognises an already-applied run instead of re-crediting.
+    val run_id: String? = null
 )
 
 // The user's device-local day as of this sync. activity_date is the DEVICE's
@@ -31,7 +35,11 @@ data class RunSyncSummary(
     val hexes_stolen: Int,
     val hexes_newly_captured: Int,
     val xp_earned: Int,
-    val new_total_lifetime_steps: Int
+    val new_total_lifetime_steps: Int,
+    // True when the payload carried a run_id the server had already applied.
+    // No credit happened; callers keep the local (provisional) xpEarned rather
+    // than overwriting it with the zeroed xp_earned. Missing on older servers.
+    val already_processed: Boolean = false
 )
 
 data class HexDetailResponse(
@@ -72,6 +80,9 @@ data class LeaderboardResponse(
 )
 
 // Server-backed recommendation (Phase 4A rules engine, GET /api/v1/recommendations).
+// The trailing daily-activity fields (Fix E) are optional on purpose: older
+// servers / cold users simply omit them (Gson leaves the field null), and they
+// mirror the backend FitnessContext's "latest reported activity day" telemetry.
 
 data class FitnessContextResponse(
     val user_id: String,
@@ -79,7 +90,13 @@ data class FitnessContextResponse(
     val hexes_owned: Int,
     val recent_captures_7d: Int,
     val last_capture_at: String? = null,
-    val total_defense_steps: Int
+    val total_defense_steps: Int,
+    val activity_date: String? = null,
+    val steps_today: Int? = null,
+    val active_minutes_today: Int? = null,
+    val goal_steps: Int? = null,
+    val goal_completed_today: Boolean? = null,
+    val goal_progress_ratio: Double? = null
 )
 
 data class Recommendation(
@@ -121,5 +138,9 @@ data class CoachResponse(
     val grounded: Boolean? = null,
     val context: FitnessContextResponse? = null,
     val recommendation: Recommendation? = null,
-    val retrieval: CoachRetrievalInfo? = null
+    val retrieval: CoachRetrievalInfo? = null,
+    // Fix E: deterministic digest of the context this response was grounded
+    // in, and whether it was served from the backend cache (no new LLM call).
+    val context_fingerprint: String? = null,
+    val cached: Boolean? = null
 )

@@ -61,6 +61,7 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import com.example.mobileapp.BuildConfig
 import com.example.mobileapp.core.network.ViewportBounds
 import com.example.mobileapp.core.permissions.PermissionManager
+import com.example.mobileapp.core.run.RunTiming
 import com.example.mobileapp.features.capture.CaptureScreenModel
 import com.example.mobileapp.features.capture.CaptureState
 import org.orbitmvi.orbit.compose.collectAsState
@@ -237,33 +238,104 @@ class CurrentRunScreen : Screen {
             }
         }
 
-        // Bottom Controls
-        Row(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 32.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (state.isTracking) {
-                FilledTonalButton(
-                    onClick = screenModel::onTogglePause,
-                    shape = RoundedCornerShape(24.dp)
+        // Bottom Controls. Hidden while a process-death recovery prompt is up —
+        // starting a fresh run over a pending recovery would silently discard it.
+        if (state.pendingRecovery == null) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 32.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (state.isTracking) {
+                    FilledTonalButton(
+                        onClick = screenModel::onTogglePause,
+                        shape = RoundedCornerShape(24.dp)
+                    ) {
+                        Text(if (state.isPaused) "Resume" else "Pause")
+                    }
+                }
+
+                ExtendedFloatingActionButton(
+                    onClick = screenModel::onToggleTracking,
+                    containerColor = if (state.isTracking) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(28.dp)
                 ) {
-                    Text(if (state.isPaused) "Resume" else "Pause")
+                    Text(
+                        text = if (state.isTracking) "Stop & Finish" else "Start Capture",
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
+        }
 
-            ExtendedFloatingActionButton(
-                onClick = screenModel::onToggleTracking,
-                containerColor = if (state.isTracking) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                contentColor = Color.White,
-                shape = RoundedCornerShape(28.dp)
+        // ── Process-death recovery prompt ────────────────────────────────
+        // A Room checkpoint was found but the capture engine is not live. Show
+        // what was recovered (never a silent 00:00) and let the user resume or
+        // discard. Drawn over the whole screen so no live-run control is active.
+        state.pendingRecovery?.let { recovery ->
+            val recoveredElapsed = RunTiming.fromCheckpoint(recovery).elapsedSeconds()
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = if (state.isTracking) "Stop & Finish" else "Start Capture",
-                    fontWeight = FontWeight.Bold
-                )
+                Card(
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("🏃 Previous Run Found", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Your run was still in progress when the app was closed.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text("Steps: ${recovery.sessionSteps}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Distance: ${String.format("%.2f km", recovery.distanceMeters / 1000.0)}",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text("Elapsed: ${formatDuration(recoveredElapsed)}", style = MaterialTheme.typography.bodyMedium)
+                                if (recovery.isPaused) {
+                                    Text("Status: Paused", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Button(
+                            onClick = screenModel::onResumeRecovery,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Resume Run", fontWeight = FontWeight.Bold)
+                        }
+                        FilledTonalButton(
+                            onClick = screenModel::onDiscardRecovery,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Discard Run")
+                        }
+                    }
+                }
             }
         }
 
@@ -377,7 +449,7 @@ private fun PermissionGateScreen(
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                text = "FitQuest needs your location and step data to track which hexagons you capture.",
+                text = "FitQuest needs your location, step and notification data to track which hexagons you capture and to keep your run alive in the background.",
                 style = MaterialTheme.typography.bodyLarge,
                 textAlign = TextAlign.Center
             )

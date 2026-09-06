@@ -28,18 +28,28 @@ class RunSyncer(private val api: FitQuestApi) {
         data class NetworkError(val cause: String? = null) : SyncOutcome
     }
 
+    /** Convenience wrapper that builds the payload for a freshly finished run. */
     suspend fun syncRun(
         totalSessionSteps: Int,
         hexesToSteps: Map<String, Int>,
-        dailyActivity: DailyActivitySnapshot? = null
-    ): SyncOutcome = try {
-        val summary = api.syncRunSession(
-            RunSyncPayload(
-                total_session_steps = totalSessionSteps,
-                hexes_to_steps = hexesToSteps,
-                daily_activity = dailyActivity
-            )
+        dailyActivity: DailyActivitySnapshot? = null,
+        runId: String? = null
+    ): SyncOutcome = syncRun(
+        RunSyncPayload(
+            total_session_steps = totalSessionSteps,
+            hexes_to_steps = hexesToSteps,
+            daily_activity = dailyActivity,
+            run_id = runId
         )
+    )
+
+    /**
+     * Syncs an already-built payload — the entry point used by [RunReconciler]
+     * when replaying a persisted (or best-effort reconstructed) unsynced run,
+     * so the retried data is byte-identical to the original attempt.
+     */
+    suspend fun syncRun(payload: RunSyncPayload): SyncOutcome = try {
+        val summary = api.syncRunSession(payload)
         SyncOutcome.Success(summary)
     } catch (e: HttpException) {
         SyncOutcome.HttpError(e.code())

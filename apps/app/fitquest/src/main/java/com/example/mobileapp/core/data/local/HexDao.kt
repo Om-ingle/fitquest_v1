@@ -18,6 +18,10 @@ interface HexDao {
     @Query("SELECT * FROM captured_hexes ORDER BY totalSteps DESC")
     fun observeAllCapturedHexes(): Flow<List<CapturedHexEntity>>
 
+    // One-shot snapshot for RunReconciler's legacy reconstruction budget.
+    @Query("SELECT * FROM captured_hexes")
+    suspend fun getAllCapturedHexes(): List<CapturedHexEntity>
+
     @Transaction
     suspend fun addSteps(hexId: String, steps: Int, timestamp: Long) {
         val current = getByHexId(hexId)

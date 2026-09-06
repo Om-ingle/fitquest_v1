@@ -10,7 +10,9 @@ import com.example.mobileapp.core.geo.HexIndexer
 import com.example.mobileapp.core.geo.UberH3HexIndexer
 import com.example.mobileapp.core.network.FitQuestApi
 import com.example.mobileapp.core.network.FitQuestApiClient
+import com.example.mobileapp.core.network.RunReconciler
 import com.example.mobileapp.core.network.RunSyncer
+import com.example.mobileapp.core.run.ActiveRunController
 import com.example.mobileapp.core.sensors.LocationTrackingManager
 import com.example.mobileapp.core.sensors.StepSensorManager
 import com.example.mobileapp.features.capture.CaptureScreenModel
@@ -24,7 +26,11 @@ val appModule = module {
             FitQuestDatabase::class.java,
             "fitquest.db"
         )
-            .addMigrations(FitQuestDatabase.MIGRATION_2_3)
+            .addMigrations(
+                FitQuestDatabase.MIGRATION_2_3,
+                FitQuestDatabase.MIGRATION_3_4,
+                FitQuestDatabase.MIGRATION_4_5
+            )
             .fallbackToDestructiveMigration()
             .build()
     }
@@ -33,19 +39,23 @@ val appModule = module {
     single { get<FitQuestDatabase>().runSessionDao() }
     single { get<FitQuestDatabase>().dailyQuestDao() }
     single { get<FitQuestDatabase>().achievementDao() }
+    single { get<FitQuestDatabase>().activeRunDao() }
 
     single<HexRepository> { RoomHexRepository(get()) }
-    single<com.example.mobileapp.core.data.local.UserProfileRepository> { 
-        com.example.mobileapp.core.data.local.RoomUserProfileRepository(get()) 
+    single<com.example.mobileapp.core.data.local.UserProfileRepository> {
+        com.example.mobileapp.core.data.local.RoomUserProfileRepository(get())
     }
-    single<com.example.mobileapp.core.data.local.RunSessionRepository> { 
-        com.example.mobileapp.core.data.local.RoomRunSessionRepository(get()) 
+    single<com.example.mobileapp.core.data.local.RunSessionRepository> {
+        com.example.mobileapp.core.data.local.RoomRunSessionRepository(get())
     }
-    single<com.example.mobileapp.core.data.local.QuestRepository> { 
-        com.example.mobileapp.core.data.local.RoomQuestRepository(get(), get()) 
+    single<com.example.mobileapp.core.data.local.QuestRepository> {
+        com.example.mobileapp.core.data.local.RoomQuestRepository(get(), get())
     }
-    single<com.example.mobileapp.core.data.local.AchievementRepository> { 
-        com.example.mobileapp.core.data.local.RoomAchievementRepository(get(), get()) 
+    single<com.example.mobileapp.core.data.local.AchievementRepository> {
+        com.example.mobileapp.core.data.local.RoomAchievementRepository(get(), get())
+    }
+    single<com.example.mobileapp.core.data.local.ActiveRunRepository> {
+        com.example.mobileapp.core.data.local.RoomActiveRunRepository(get())
     }
 
     single<HexIndexer> { UberH3HexIndexer() }
@@ -55,22 +65,35 @@ val appModule = module {
 
     single { HexCaptureEngine(get(), get(), get(), get()) }
 
+    // Process-lifetime owner of the active run's identity + wall-clock timing;
+    // starts/stops the foreground tracking service. Context resolves to the
+    // application context registered by androidContext() in FitQuestApp.
+    single { ActiveRunController(get(), get(), get()) }
+
     // Networking: Retrofit/OkHttp against the configurable backend URL.
     // Android never sees DATABASE_URL or Supabase credentials, and the
     // deferred-auth backend needs no auth headers for the dev user.
     single<FitQuestApi> { FitQuestApiClient.create(BuildConfig.BACKEND_BASE_URL) }
     single { RunSyncer(get()) }
+    // Foreground reconciliation of unsynced runs (Fix A): single-flight,
+    // replayed through RunSyncer, triggered from MainActivity.onStart.
+    single { RunReconciler(get(), get(), get()) }
     single { com.example.mobileapp.core.network.LeaderboardFetcher(get()) }
     single { com.example.mobileapp.core.network.MapTerritoryFetcher(get()) }
     single { com.example.mobileapp.core.network.RecommendationFetcher(get()) }
     single { com.example.mobileapp.core.network.CoachFetcher(get()) }
+    // Fix E: process-lifetime coach cache so Home navigation alone never
+    // re-triggers the expensive AI-coach GET/LLM generation. Kept as a
+    // singleton (like the fetcher) so its Success survives tab switches.
+    single { com.example.mobileapp.core.network.CoachCache(get(), get()) }
 
     // factory (not single) so Voyager can properly scope and dispose the
     // ScreenModel when the screen leaves the backstack. A singleton would keep
     // the Orbit container alive forever and cause stale state on re-entry.
     factory {
         CaptureScreenModel(
-            get(), get(), get(), get(), get(), get(), get(), get(), get()
+            get(), get(), get(), get(), get(), get(), get(), get(), get(),
+            get(), get()
         )
     }
 }

@@ -1,0 +1,12 @@
+# RUN A persisted run_sessions row (device Room DB, dumped 2026-09-06)
+id = 4b9ac4c7-1681-4616-a157-c4ad087562c4
+startedAt = 1788678601641
+endedAt = 1788679741912
+durationSeconds = 1126
+totalSteps = 449
+distanceMeters = 336.75
+caloriesBurned = 17
+capturedHexCount = 1
+capturedHexIdsJson = 8a60961611a7fff
+xpEarned = 50
+isSynced = 1

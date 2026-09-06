@@ -38,6 +38,10 @@ class CoachFetcher(private val api: FitQuestApi) {
         } else {
             Outcome.Success(response)
         }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        // Coroutine cancellation (e.g. the caller left the screen mid-fetch)
+        // must propagate, not masquerade as a MalformedResponse.
+        throw e
     } catch (e: HttpException) {
         Outcome.HttpError(e.code())
     } catch (e: IOException) {

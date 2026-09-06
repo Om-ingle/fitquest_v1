@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
 from app.api.dependencies import get_current_user, get_db
+from app.modules.coach.cache import coach_cache
 from app.modules.coach.llm import (
     LLMProviderError,
     LLMProviderNotConfigured,
@@ -53,6 +54,7 @@ def coach_endpoint(
             user_id=user_id,
             embedding_provider=get_embedding_provider(),
             llm_provider=get_llm_provider(),
+            cache=coach_cache,
         )
     except (EmbeddingProviderNotConfigured, LLMProviderNotConfigured) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

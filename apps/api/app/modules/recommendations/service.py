@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 
 from app.modules.map.models import HexOwnership
 from app.modules.recommendations.schemas import FitnessContext, Recommendation
+from app.modules.runs.models import UserDailyActivity
 from app.modules.users.models import User
 
 # A capture counts as "recent" for this many days.
@@ -21,6 +22,13 @@ def build_fitness_context(db: Session, user_id: uuid.UUID) -> FitnessContext:
 
     A missing user row simply yields zeroed stats (the dev user may not
     exist yet) — the rules engine treats that as a cold start.
+
+    Daily-activity telemetry is taken from the user's LATEST reported
+    ``UserDailyActivity`` row (max activity_date). The row's own date is
+    carried into ``activity_date`` so nothing is mislabeled as "today"
+    when the latest report is older (server-UTC and device-local dates
+    differ by design). When no row exists the daily fields stay None —
+    never a fabricated zero.
     """
     user = db.get(User, user_id)
     total_lifetime_steps = user.total_lifetime_steps if user else 0
@@ -45,6 +53,21 @@ def build_fitness_context(db: Session, user_id: uuid.UUID) -> FitnessContext:
         )
     ).one()
 
+    # Latest reported activity day (single row per (user, activity_date)).
+    latest_daily = db.exec(
+        select(UserDailyActivity)
+        .where(UserDailyActivity.user_id == user_id)
+        .order_by(UserDailyActivity.activity_date.desc())
+        .limit(1)
+    ).first()
+
+    goal_progress_ratio = None
+    if latest_daily is not None:
+        if latest_daily.goal_steps and latest_daily.goal_steps > 0:
+            goal_progress_ratio = round(
+                min(1.0, latest_daily.steps / latest_daily.goal_steps), 3
+            )
+
     return FitnessContext(
         user_id=user_id,
         total_lifetime_steps=total_lifetime_steps,
@@ -52,6 +75,12 @@ def build_fitness_context(db: Session, user_id: uuid.UUID) -> FitnessContext:
         recent_captures_7d=recent_captures_7d or 0,
         last_capture_at=last_capture_at,
         total_defense_steps=total_defense_steps or 0,
+        activity_date=latest_daily.activity_date if latest_daily else None,
+        steps_today=latest_daily.steps if latest_daily else None,
+        active_minutes_today=latest_daily.active_minutes if latest_daily else None,
+        goal_steps=latest_daily.goal_steps if latest_daily else None,
+        goal_completed_today=latest_daily.goal_completed if latest_daily else None,
+        goal_progress_ratio=goal_progress_ratio,
     )
 
 

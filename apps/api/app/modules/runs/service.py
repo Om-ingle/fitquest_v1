@@ -1,5 +1,6 @@
 import datetime
 import uuid
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.modules.runs.models import CapturedHex, RunSession, UserDailyActivity
@@ -52,6 +53,17 @@ def upsert_daily_activity(
     return row
 
 
+def _already_processed_summary(user: User | None) -> RunSyncSummary:
+    return RunSyncSummary(
+        hexes_defended=0,
+        hexes_stolen=0,
+        hexes_newly_captured=0,
+        xp_earned=0,
+        new_total_lifetime_steps=user.total_lifetime_steps if user else 0,
+        already_processed=True,
+    )
+
+
 def process_run_sync(db: Session, payload: RunSyncPayload, current_user_id: uuid.UUID) -> RunSyncSummary:
     summary = RunSyncSummary(
         hexes_defended=0,
@@ -61,8 +73,22 @@ def process_run_sync(db: Session, payload: RunSyncPayload, current_user_id: uuid
         new_total_lifetime_steps=0
     )
 
+    # Client-supplied stable run/session id. New clients send it so a retried
+    # sync is recognised as already applied (Fix A replay guard). Old clients
+    # omit it -> behaviour is exactly as before.
+    run_id = (payload.run_id or "").strip() or None
+
     # 1. Update the user's total lifetime steps
     user = db.get(User, current_user_id)
+
+    # Idempotency guard: if this run was already applied for this user, do not
+    # apply it again. runsession is the natural replay ledger — one row per
+    # applied run_id, keyed by id, keyed to the owning user.
+    if run_id is not None:
+        existing = db.get(RunSession, run_id)
+        if existing is not None and existing.user_id == str(current_user_id):
+            return _already_processed_summary(user)
+
     if user:
         user.total_lifetime_steps += payload.total_session_steps
         summary.new_total_lifetime_steps = user.total_lifetime_steps
@@ -111,5 +137,23 @@ def process_run_sync(db: Session, payload: RunSyncPayload, current_user_id: uuid
     if payload.daily_activity is not None and user is not None:
         upsert_daily_activity(db, current_user_id, payload.daily_activity)
 
-    db.commit()
+    # Record the run in the replay ledger in the SAME transaction as the
+    # credit, so a crash between commit and a lost response cannot double-
+    # credit on replay. runsession is the natural marker (existing table,
+    # no schema change); id is the client's run_id.
+    if run_id is not None:
+        db.add(RunSession(id=run_id, user_id=str(current_user_id)))
+
+    try:
+        db.commit()
+    except IntegrityError:
+        # Lost a race against a concurrent replay of the same run (same id
+        # committed first). Roll back our partial write and confirm the
+        # winner really was this run for this user before reporting it as
+        # already processed; anything else is an unexpected conflict.
+        db.rollback()
+        existing = db.get(RunSession, run_id) if run_id is not None else None
+        if existing is not None and existing.user_id == str(current_user_id):
+            return _already_processed_summary(user)
+        raise
     return summary

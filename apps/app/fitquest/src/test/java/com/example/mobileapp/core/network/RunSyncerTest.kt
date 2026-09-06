@@ -109,6 +109,47 @@ class RunSyncerTest {
     }
 
     @Test
+    fun `run id rides the finished-run payload for the replay guard`() = runBlocking {
+        var received: RunSyncPayload? = null
+        val syncer = RunSyncer(FakeApi { payload ->
+            received = payload
+            summary
+        })
+
+        syncer.syncRun(350, emptyMap(), runId = "b7853a0d-1234-4a6e-9c00-000000000001")
+
+        assertEquals("b7853a0d-1234-4a6e-9c00-000000000001", received!!.run_id)
+    }
+
+    @Test
+    fun `payload overload replays the exact stored payload byte-identically`() = runBlocking {
+        var received: RunSyncPayload? = null
+        val syncer = RunSyncer(FakeApi { payload ->
+            received = payload
+            summary
+        })
+        val dailyActivity = com.example.mobileapp.core.network.models.DailyActivitySnapshot(
+            activity_date = "2026-09-06",
+            steps = 3172,
+            active_minutes = 42,
+            goal_steps = 6000,
+            goal_completed = false,
+            hexes_owned = 10,
+            hexes_captured = 2
+        )
+        val original = RunSyncPayload(
+            total_session_steps = 631,
+            hexes_to_steps = mapOf("8a2a1072b59ffff" to 300),
+            daily_activity = dailyActivity,
+            run_id = "b7853a0d-1234-4a6e-9c00-000000000001"
+        )
+
+        syncer.syncRun(original)
+
+        assertEquals(original, received)
+    }
+
+    @Test
     fun `http 4xx-5xx maps to HttpError with the code`() = runBlocking {
         val body = "{}".toResponseBody("application/json".toMediaType())
         val syncer = RunSyncer(FakeApi { throw HttpException(Response.error<Unit>(500, body)) })
