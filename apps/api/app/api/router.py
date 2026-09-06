@@ -7,6 +7,7 @@ from app.modules.quests import router as quests_router
 from app.modules.rag import router as rag_router
 from app.modules.recommendations import router as recommendations_router
 from app.modules.runs import router as runs_router
+from app.modules.triggers.ws import router as coaching_ws_router
 from app.modules.users import router as users_router
 
 api_router = APIRouter()
@@ -19,3 +20,6 @@ api_router.include_router(leaderboard_router.router, prefix="/leaderboard", tags
 api_router.include_router(recommendations_router.router, prefix="/recommendations", tags=["Recommendations"])
 api_router.include_router(rag_router.router, prefix="/rag", tags=["RAG"])
 api_router.include_router(coach_router.router, prefix="/coach", tags=["Coach"])
+# M8.2 — real-time coaching channel (WebSocket), an ADDITION to REST (SRS §16).
+# Mounted under /ws so the endpoint is /api/v1/ws/coaching.
+api_router.include_router(coaching_ws_router, prefix="/ws", tags=["Coaching WS"])

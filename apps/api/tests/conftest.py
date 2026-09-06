@@ -17,15 +17,23 @@ from sqlmodel import SQLModel  # noqa: E402
 from app.core.database import engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.modules.coach.cache import coach_cache  # noqa: E402
+from app.modules.triggers.engine import trigger_engine  # noqa: E402
+from app.modules.triggers.ws import manager as coaching_ws_manager  # noqa: E402
 
 
 @pytest.fixture()
 def client():
-    # The coach cache is a process-global singleton (shared by the router);
-    # clear it with the DB so a cached response never leaks across tests.
+    # The coach cache, trigger engine and coaching-WS session manager are
+    # process-global singletons (shared by the routers/services); clear them
+    # with the DB so cached responses / accepted triggers / live WS sessions
+    # never leak across tests.
     coach_cache.clear()
+    trigger_engine.clear()
+    coaching_ws_manager.clear()
     SQLModel.metadata.create_all(engine)
     with TestClient(app) as test_client:
         yield test_client
     SQLModel.metadata.drop_all(engine)
     coach_cache.clear()
+    trigger_engine.clear()
+    coaching_ws_manager.clear()
