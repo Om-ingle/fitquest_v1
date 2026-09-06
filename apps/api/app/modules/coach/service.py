@@ -60,6 +60,7 @@ def generate_coaching(
     top_k: Optional[int] = None,
     min_similarity: Optional[float] = None,
     cache: Optional[CoachCache] = None,
+    event_context: Optional[str] = None,
 ) -> CoachResponse:
     """Run the full grounded coaching flow for one user.
 
@@ -70,6 +71,13 @@ def generate_coaching(
     — a cache hit is decided against current data, never against a stored
     stale context. Failures are never cached: only a validated response is
     stored, so a Retry after an error always reaches the LLM.
+
+    ``event_context`` (M8.3A) is an optional short reason string describing
+    WHY this message is being generated (e.g. a just-fired coaching trigger).
+    When omitted the prompt is byte-identical to the pull path; when present
+    it is threaded into the prompt's context section so the model can
+    distinguish what triggered the message. It never alters the grounding or
+    safety rules and is never used as a cache key (see coach/push.py).
     """
     if top_k is None:
         top_k = settings.coach_top_k
@@ -103,7 +111,9 @@ def generate_coaching(
     )
 
     # 6-7. Grounded prompt, then the LLM.
-    prompt = build_coaching_prompt(context, recommendation, chunks)
+    prompt = build_coaching_prompt(
+        context, recommendation, chunks, event_context=event_context
+    )
     message = llm_provider.generate(prompt)
 
     # 8. Validate before returning/storing.

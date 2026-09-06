@@ -19,6 +19,8 @@ coach response is flagged ``grounded=False`` (see service.py).
 
 from __future__ import annotations
 
+from typing import Optional
+
 from app.modules.rag.schemas import RetrievedChunk
 
 # Cap how much retrieved text is fed to the LLM per chunk. Chunks are at
@@ -58,12 +60,19 @@ def build_coaching_prompt(
     context,  # recommendations.schemas.FitnessContext (avoid circular import)
     recommendation,  # recommendations.schemas.Recommendation
     chunks: list[RetrievedChunk],
+    event_context: Optional[str] = None,
 ) -> str:
     """Assemble the grounded coaching prompt.
 
     ``chunks`` may be empty (below-threshold or empty knowledge base) —
     the prompt then carries an explicit no-knowledge marker and stricter
     fallback instructions; the caller flags the response accordingly.
+
+    ``event_context`` (M8.3A) optionally adds one factual line to the context
+    section explaining WHY this message is being generated (e.g. "just
+    completed a run"). The pull path (GET /coach) omits it, so its prompt is
+    unchanged. It never loosens the grounding/safety rules below and never
+    lets the model cite anything not in the context or retrieved knowledge.
     """
     # Section 1 — real backend-derived context only.
     if context.last_capture_at is not None:
@@ -108,6 +117,10 @@ def build_coaching_prompt(
         f"\"{recommendation.title}\" — {recommendation.description} "
         f"(goal: {recommendation.target_value} {recommendation.target_metric})"
     )
+    if event_context:
+        context_section += (
+            f"\n- Why this message is being generated: {event_context}"
+        )
 
     # Section 2 — retrieved knowledge, or the explicit absence of it.
     if chunks:

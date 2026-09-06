@@ -63,7 +63,9 @@ import com.example.mobileapp.core.data.local.RunSessionRepository
 import com.example.mobileapp.core.data.local.UserProfileEntity
 import com.example.mobileapp.core.data.local.UserProfileRepository
 import com.example.mobileapp.core.network.CoachCache
+import com.example.mobileapp.core.network.CoachDisplaySelector
 import com.example.mobileapp.core.network.CoachFetcher
+import com.example.mobileapp.core.network.LiveCoachStore
 import com.example.mobileapp.core.network.RecommendationFetcher
 import com.example.mobileapp.core.network.models.Recommendation
 import com.example.mobileapp.ui.capture.CurrentRunScreen
@@ -97,6 +99,7 @@ object HomeTab : Tab {
         val hexRepo = koinInject<HexRepository>()
         val recommendationFetcher = koinInject<RecommendationFetcher>()
         val coachCache = koinInject<CoachCache>()
+        val liveCoachStore = koinInject<LiveCoachStore>()
         val scope = rememberCoroutineScope()
 
         LaunchedEffect(Unit) {
@@ -128,7 +131,20 @@ object HomeTab : Tab {
         LaunchedEffect(Unit) {
             coachCache.ensureLoaded()
         }
-        val aiCoachOutcome by coachCache.state.collectAsState(initial = null)
+        val pullAiOutcome by coachCache.state.collectAsState(initial = null)
+        // M8.3B/M8.5: LiveCoachStore is deliberately separate from CoachCache,
+        // so a push never overwrites the pull cache's state. M8.5 makes the
+        // choice between the two freshness-aware instead of an unconditional
+        // live-preference: the response grounded in the newer context wins
+        // regardless of source, and the same context keeps the live-push
+        // presentation (see CoachDisplaySelector). The pull outcome below is
+        // shown exactly as before whenever no live message is present.
+        val livePush by liveCoachStore.message.collectAsState(initial = null)
+        val aiCoachDisplay = remember(livePush, pullAiOutcome) {
+            CoachDisplaySelector.select(livePush, pullAiOutcome)
+        }
+        val aiCoachOutcome: CoachFetcher.Outcome? = aiCoachDisplay.outcome
+        val aiIsLive = aiCoachDisplay.isLive
 
         val profileState by userProfileRepo.observeProfile().collectAsState(initial = null)
         val profile = profileState ?: UserProfileEntity()
@@ -174,6 +190,7 @@ object HomeTab : Tab {
                     outcome = coachOutcome,
                     onRetry = { coachRetryKey++ },
                     aiOutcome = aiCoachOutcome,
+                    aiIsLive = aiIsLive,
                     onAiRetry = { scope.launch { coachCache.refresh() } }
                 )
             }
@@ -383,6 +400,7 @@ private fun CoachCard(
     outcome: RecommendationFetcher.Outcome?,
     onRetry: () -> Unit,
     aiOutcome: CoachFetcher.Outcome?,
+    aiIsLive: Boolean = false,
     onAiRetry: () -> Unit
 ) {
     ElevatedCard(
@@ -521,8 +539,13 @@ private fun CoachCard(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // M8.3B: when the shown advice arrived as a LIVE push
+                        // (coaching_message over the WebSocket) rather than an
+                        // ordinary pull refresh, say so — no redesign, just an
+                        // honest label swap. The rendered CoachResponse fields
+                        // are identical either way.
                         Text(
-                            text = "✨ Personal advice",
+                            text = if (aiIsLive) "⚡ Live coaching" else "✨ Personal advice",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )

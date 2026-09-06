@@ -1,0 +1,39 @@
+M8.4 real-device evidence — Samsung RZ8R90661CF, 2026-09-06.
+Companion to m84-tts-live-card.png. Extracted from an Android uiautomator
+hierarchy dump of the Home screen taken immediately after coaching push #2
+(run_id e06d39d1-1183-455f-bc09-7114950d0a69, 3,500 steps) fired fq-coach-2.
+
+The "Live coaching" CoachCard section (text nodes, verbatim from the dump):
+
+  text="Coach says…"
+  text="Hard"                       (difficulty chip, pull recommendation)
+  text="Expand your empire"         (recommendation title)
+  text="You've captured 10 hexes in the last 7 days. Push for 3 more to grow
+        your territory."           (recommendation rationale row)
+  text="🎯 3 hexes"
+  text="Why: recent_captures_7d=10"
+  text="⚡ Live coaching"            (live-push heading)
+  text="📘 Grounded in fitness knowledge"   (grounded badge)
+  text="Nice momentum — 10 hexes captured in the past week and a run in today
+        is solid progress. For the push to 3 more, keep it gradual: give
+        yourself a lighter, comfortable day tomorrow so your body can recover
+        and adapt before the next effort. That steady rhythm is what will make
+        those captures stick without burning out."
+                                    (live push body — the message TTS read aloud
+                                     as fq-coach-2; its 60-char speak-snippet was
+                                     "Nice momentum — 10 hexes captured in the
+                                     past week and a run", i.e. the same text)
+
+Logcat (tags CoachingTts / CoachingWs) for the session:
+
+  22:41:03.902 CoachingTts: speak queued id=fq-coach-1 flush=true chars=366
+      text="That run keeps your consistency strong—10 hexes in 7 days is"
+  22:41:03.938 CoachingTts: utterance started id=fq-coach-1
+  22:41:22.752 CoachingWs: status=IDLE            (app backgrounded)
+  22:41:31.790 CoachingTts: utterance done id=fq-coach-1
+  22:41:38.740 CoachingWs: status=CONNECTING       (relaunch / WS reconnect)
+  22:41:38.815 CoachingWs: status=CONNECTED
+  -- no second speak for fq-coach-1 across background/relaunch/reconnect --
+  22:42:17.224 CoachingTts: speak queued id=fq-coach-2 flush=true chars=317
+      text="Nice momentum — 10 hexes captured in the past week and a run"
+  22:42:17.229 CoachingTts: utterance started id=fq-coach-2

@@ -10,6 +10,11 @@ from app.modules.runs import router as runs_router
 from app.modules.triggers.ws import router as coaching_ws_router
 from app.modules.users import router as users_router
 
+# M8.3A — real-time AI push. Importing the module is the wiring: it registers
+# the PushCoach singleton as a trigger-engine subscriber ONCE, at import,
+# exactly like the M8.2 WebSocket transport. The engine stays the producer.
+from app.modules.coach.push import push_coach as _push_coach  # noqa: F401
+
 api_router = APIRouter()
 
 api_router.include_router(users_router.router, prefix="/users", tags=["Users"])

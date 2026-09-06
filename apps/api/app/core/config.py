@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     rag_similarity_threshold: float = 0.50
     coach_top_k: int = 4
 
+    # ── Real-time AI coaching push (M8.3A) ──────────────────────────────
+    # Bounds on the background trigger -> AI coaching -> WebSocket push
+    # stage. Conservative + in-process on purpose (SRS §17 treats Redis as
+    # optional): at most one generation per user per cooldown window, so a
+    # burst (a run that also captures hexes and crosses a milestone) folds
+    # into one push instead of paying per trigger. Workers bound concurrent
+    # LLM calls. Tests disable the whole stage via push_coach.enabled=False.
+    push_coach_enabled: bool = True
+    push_coach_cooldown_seconds: float = 30.0
+    push_coach_max_workers: int = 2
+
     # Look for .env next to the API first, then at the repository root, so the
     # app works whether it is run from apps/api or the repo root. The master
     # .env also holds Android-side variables (MAPTILER_API_KEY etc.) — ignore

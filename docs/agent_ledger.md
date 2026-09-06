@@ -329,3 +329,166 @@
   (deepseek-v4-flash)** because the Gemini 2.5-flash free-tier daily quota was
   exhausted on 2026-09-06 (confirmed HTTP 429); embeddings stayed Gemini.
   No Git operations performed; no key values printed; TTS not started.
+
+## [2026-09-06 21:54] - Task: M8.3B — Android Real-Time Coaching WebSocket Client
+
+- **Objective:** Make the Android app a receive-only participant in the M8.2
+  push channel per the M8.3B spec: connect to the backend WebSocket
+  `/api/v1/ws/coaching`, ignore raw `coaching_trigger` frames, decode each
+  `coaching_message`'s `coach` into the EXISTING `CoachResponse` DTO, and
+  surface it in the EXISTING Home coach card. No TTS, no backend trigger/PushCoach
+  changes, no auth, no second coaching model, no `CoachCache` corruption, no
+  hard-coded dev IP, no git operations.
+- **Assumptions Declared:**
+  - Backend push channel is live only on a server that has M8.2 loaded; the
+    process observed running on `:8000` (PID 24672, started 18:40, no
+    `--reload`) predates M8.2 (committed 20:18) and rejects all WS upgrades.
+  - The app's dev identity is the fixed no-auth dev user
+    (`00000000-...-0001`); the WS connects without `?user_id`, mirroring REST.
+  - Android module is `apps/app/fitquest`; Gradle tasks run as
+    `:app:...` from `apps/app`; unit tests are JVM (`Dispatchers.Unconfined` +
+    injectable no-op `sleeper`, no `kotlinx-coroutines-test`).
+- **Modifications Matrix:**
+  - `apps/app/fitquest/.../core/network/CoachingWsClient.kt` (created: receive
+    client, status enum, `LiveCoach/Ignored/Malformed` sealed parse result,
+    `CoachingSocket`/`Callbacks`/`Factory` injectable seam; idempotent
+    connect/disconnect; capped exp backoff `retryDelayMs` 1s→30s, ≤5 retries,
+    then quiet DISCONNECTED; factory-throw = failed attempt; only LiveCoach
+    published)
+  - `.../core/network/OkHttpCoachingSocketFactory.kt` (created: OkHttp bridge +
+    `coachingWsUrl`; ws/wss derived from BACKEND_BASE_URL, path
+    `/api/v1/ws/coaching`; `HttpUrl` used only to parse — `.scheme("ws")` on the
+    builder throws, so URL assembled by hand)
+  - `.../core/network/LiveCoachStore.kt` (created: process-lifetime live push
+    slot, `StateFlow<CoachResponse?>`)
+  - `.../di/AppModule.kt` (modified: `AppScope`; `LiveCoachStore` singleton;
+    WS `CoachingWsClient` singleton over WS-dedicated OkHttp with pingInterval
+    30s + read/write timeout 0)
+  - `.../MainActivity.kt` (modified: `coachingWsClient.connect()` in onStart,
+    `disconnect()` in onStop)
+  - `.../ui/home/HomeTab.kt` (modified: prefer `LiveCoachStore.message` over
+    pull; heading "⚡ Live coaching" while a live push is present)
+  - `.../src/test/.../CoachingWsClientTest.kt` (created: 16 JVM tests)
+  - `.../src/test/.../LiveCoachStoreTest.kt` (created: 5 JVM tests, incl. the
+    push-does-not-corrupt-pull-cache proof)
+  - `docs/docs/coaching/0004-m83b-android-websocket-client.md` (created: ADR)
+- **Decision Logic:**
+  - *Separate live store vs pull cache:* `CoachCache` keys its "fetch again?"
+    on the set of synced run ids; writing a push into it would corrupt that
+    bookkeeping, so live pushes go to a separate `LiveCoachStore` and Home
+    prefers it while present. Documented in ADR 0004.
+  - *Process/activity scoping:* one `CoachingWsClient` Koin singleton on
+    `AppScope`; MainActivity connects on foreground / disconnects on
+    background, so tab navigation never duplicates or drops the socket.
+  - *Deterministic tests without new deps:* scripted fake socket factory +
+    Unconfined scope + no-op `sleeper` make reconnect/give-up synchronous;
+    a parser unit test caught a real `HttpUrl.scheme("ws")`
+    `IllegalArgumentException` in `coachingWsUrl`, fixed by hand-assembly.
+  - *Failure containment:* every path contained; a dead WS only leaves the live
+    store empty so the app falls back to the pull/offline path.
+- **Result Status:** Focused M8.3B tests **21/21**; CoachFetcherTest +
+  CoachCacheTest regression **green**; full Android unit suite **96 tests, 0
+  failures**; `:app:assembleDebug` **BUILD SUCCESSFUL**. Real-device
+  verification (Samsung RZ8R90661CF) **E2E PASS**: first attempt was blocked
+  because the running backend (`:8000`, PID 24672, started 18:40, no
+  `--reload`) predated the M8.2 WS transport (committed 20:18) and 403'd every
+  WebSocket upgrade — the device client handled it correctly (capped-backoff
+  retries → quiet give-up, no crash, REST card intact); after owner-approved
+  restart onto current `main` (via `apps/api/.venv/Scripts/python.exe -m
+  uvicorn app.main:app`), the device WS reached CONNECTED and a fresh 1,500-step
+  run sync (`workout_completed`) produced a real `coaching_message` that the app
+  decoded and rendered as **"⚡ Live coaching"** with freshly generated grounded
+  per-run content. Screenshot evidence:
+  `docs/docs/ui/evidence-m83b/home_live_push.png`. Two disclosed dev-sandbox
+  run-sync mutations (950 + 1,500 steps, fresh run_ids, no hexes) raised
+  dev-user lifetime to 5,948 steps. No Git operations performed; no key values
+  printed; TTS (M8.4) not started.
+
+## [2026-09-06 22:45] - Task: M8.4 — Native Android Text-to-Speech (TTS) for Live Coaching
+
+- **Objective:** Speak each genuinely NEW live `coaching_message` aloud using the
+  NATIVE engine (`android.speech.tts.TextToSpeech`) per the M8.4 spec: no cloud
+  TTS / API keys / paid-external dependency; NO backend or API change; reuse the
+  existing M8.3B state flow (not a parallel coaching pipeline); speak only new
+  messages (never on recomposition / navigation / reconnect / same-message);
+  avoid overlapping speech (newer flushes older); clean lifecycle; add a TTS
+  toggle ONLY if a lightweight settings location exists (none does — no new
+  settings system); focused JVM tests; ADR + ledger; real-device verification
+  when practical. Do NOT commit/push/rebase/etc. Do NOT start M9.
+- **Assumptions Declared:**
+  - The single state through which a new message reaches the UI is
+    `LiveCoachStore.message` (`StateFlow<CoachResponse?>`) collected by HomeTab;
+    app-scoped collection of that same flow is the correct trigger.
+  - `CoachResponse.context_fingerprint` is the backend-deterministic identity to
+    key dedupe on, plus normalized content; dedupe must be in-memory + bounded
+    (never persisted to DB).
+  - The Android app has no settings surface (audited: no SharedPreferences /
+    DataStore / Switch) → spec forbids inventing one; `enabled` defaults ON as a
+    programmatic seam only.
+  - Real-device "spoken" evidence = engine-level utterance lifecycle in logcat
+    (`speak queued` / `utterance started` / `utterance done`); no ear/mic
+    confirmation and media volume not boosted (noted in ADR).
+- **Modifications Matrix:**
+  - `apps/app/fitquest/.../core/tts/TtsSynthesizer.kt` (created: seam —
+    `isReady`, `setOnReadyChanged` [reports current on registration], `speak`,
+    `stop`, `release`; best-effort never throws)
+  - `.../core/tts/AndroidTtsSynthesizer.kt` (created: real native adapter —
+    application context, async race-safe init [sync-in-constructor or later
+    SUCCESS], ready-only-after-SUCCESS, default-locale setLanguage with engine
+    fallback, QUEUE_FLUSH/ADD, utterance id `fq-coach-N`, UtteranceProgressListener
+    logging, runCatching everywhere, TAG CoachingTts)
+  - `.../core/tts/CoachingSpeechGate.kt` (created: bounded in-memory dedupe on
+    fingerprint+content; TTS-only markdown-light normalization of the message
+    copy — Home card keeps backend bytes)
+  - `.../core/tts/CoachingSpeechController.kt` (created: app-scoped collector of
+    `LiveCoachStore.message.drop(1)`; latest-wins pending until engine ready;
+    `enabled` seam [disable stops + clears]; `stopSpeaking`; idempotent `release`)
+  - `.../di/AppModule.kt` (modified: Koin singles for gate, `TtsSynthesizer`,
+    controller — all on `AppScope`)
+  - `.../FitQuestApp.kt` (modified: resolve + `.start()` the controller once per
+    process, guarded so voice coaching never breaks app boot)
+  - `.../src/test/.../core/tts/CoachingSpeechGateTest.kt` (created: 8 tests)
+  - `.../src/test/.../core/tts/CoachingSpeechControllerTest.kt` (created: 13
+    tests over fake synthesizer + real LiveCoachStore)
+  - `docs/docs/coaching/0005-m84-tts.md` (created: ADR)
+  - `docs/docs/ui/evidence-m84/m84-tts-live-card.{png,txt}` (created: evidence)
+- **Decision Logic:**
+  - *Reuse the existing flow:* the controller collects the same
+    `LiveCoachStore.message` flow Home renders, at app scope; `drop(1)` makes a
+    retained value at subscription (cold start / reconnect / re-entry) never
+    re-read. Recomposition and tab navigation publish nothing → cannot
+    re-trigger speech. No parallel pipeline, so the M8.3B UI/state flow is
+    untouched (regression suite green).
+  - *New-message detection:* gate key = `context_fingerprint` + normalized
+    content in a bounded in-memory ring; a redelivered identical message
+    (replay/fan-out/regenerate) is Silent; a genuinely new context or content
+    speaks. Nothing persisted.
+  - *Speech semantics:* prefer the coach message copy; every speak is
+    QUEUE_FLUSH so a newer message replaces the older utterance (no overlap);
+    messages before engine-ready are collapsed to one latest-wins pending.
+  - *Lifecycle:* synthesizer is app-scoped + application-context (no Activity
+    leak, one instance per process); speech intentionally continues across tab
+    nav and backgrounding so a run-session message finishes; release() is the
+    process teardown path. TTS is process-scoped, NOT foreground-scoped like the
+    M8.3B socket — a deliberate difference.
+  - *Failure containment:* every android.speech.tts call wrapped; init failure,
+    missing language/voice, dead service, speak/shutdown errors are logged
+    (CoachingTts), never crashes, never blocks WS/REST/tracking.
+- **Result Status:** Focused M8.4 tests **21/21**; existing coaching tests
+  (CoachingWsClientTest, LiveCoachStoreTest, CoachFetcherTest, CoachCacheTest)
+  regression **green**; full Android unit suite **117 tests, 0 failures, 0
+  errors** (was 96); `:app:assembleDebug` **BUILD SUCCESSFUL**. Real-device
+  verification (Samsung RZ8R90661CF) **E2E PASS**: app foreground → WS
+  CONNECTED; fresh 2,000-step run sync (`5f50049a-…`) → `coaching_message` →
+  `CoachingTts: speak queued id=fq-coach-1` + `utterance started` + `utterance
+  done`; app backgrounded (WS IDLE) then relaunched (WS CONNECTED) → NOT
+  re-spoken (exactly one speak for fq-coach-1 across the whole session); fresh
+  3,500-step sync (`e06d39d1-…`) → NEW `speak queued id=fq-coach-2` +
+  `utterance started`, and a UI dump confirmed the **"⚡ Live coaching"** card
+  body equals the spoken message. Evidence:
+  `docs/docs/ui/evidence-m84/m84-tts-live-card.{png,txt}`. Scope note recorded:
+  speech proof is at the engine level (utterance lifecycle); media volume not
+  boosted, no ear/mic confirmation. Two dev-sandbox run-sync mutations (2,000 +
+  3,500 steps, fresh run_ids, no hexes) were test pushes against the dev user.
+  No Git operations performed; no key values printed; M9 not started.
+

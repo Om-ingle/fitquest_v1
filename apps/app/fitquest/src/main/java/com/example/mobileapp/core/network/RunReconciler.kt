@@ -46,10 +46,18 @@ class RunReconciler(
 
     private val inFlight = AtomicBoolean(false)
 
-    /** Replays all unsynced runs once; safe to call on every foreground. */
-    suspend fun reconcileUnsyncedRuns() {
-        if (!inFlight.compareAndSet(false, true)) return
-        try {
+    /**
+     * Replays all unsynced runs once; safe to call on every foreground.
+     *
+     * @return true when at least one run reached the synced state during this
+     *         call (i.e. the device's synced-run signature advanced and the
+     *         server context may have changed). False when there was nothing to
+     *         replay, nothing succeeded, or another foreground already holds the
+     *         single-flight lock.
+     */
+    suspend fun reconcileUnsyncedRuns(): Boolean {
+        if (!inFlight.compareAndSet(false, true)) return false
+        return try {
             withContext(Dispatchers.IO) {
                 reconcile()
             }
@@ -58,9 +66,9 @@ class RunReconciler(
         }
     }
 
-    private suspend fun reconcile() {
+    private suspend fun reconcile(): Boolean {
         val unsynced = runSessionRepository.getUnsynced()
-        if (unsynced.isEmpty()) return
+        if (unsynced.isEmpty()) return false
 
         // Hexes the server already holds, inferred from hexes touched by any
         // synced session — used only by the legacy best-effort path.
@@ -77,6 +85,7 @@ class RunReconciler(
             .filter { it.hexId !in syncedHexes }
             .forEach { budget[it.hexId] = it.totalSteps }
 
+        var creditedNewRun = false
         for (session in unsynced) {
             val payload = payloadFor(session, budget) ?: continue
             when (val outcome = runSyncer.syncRun(payload)) {
@@ -87,6 +96,7 @@ class RunReconciler(
                     val xp = if (outcome.summary.already_processed) session.xpEarned
                     else outcome.summary.xp_earned
                     runSessionRepository.markSynced(session.id, xp)
+                    creditedNewRun = true
                 }
                 // Any other outcome leaves the row unsynced in Room so it is
                 // retried on the next foreground — never silently dropped.
@@ -94,6 +104,7 @@ class RunReconciler(
                 is RunSyncer.SyncOutcome.NetworkError -> Unit
             }
         }
+        return creditedNewRun
     }
 
     private fun payloadFor(session: RunSessionEntity, budget: MutableMap<String, Int>): RunSyncPayload? {

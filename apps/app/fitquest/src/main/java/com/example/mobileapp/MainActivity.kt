@@ -23,7 +23,8 @@ import cafe.adriel.voyager.transitions.SlideTransition
 import com.example.mobileapp.core.capture.HexCaptureEngine
 import com.example.mobileapp.core.data.local.ActiveRunRepository
 import com.example.mobileapp.core.data.local.UserProfileRepository
-import com.example.mobileapp.core.network.RunReconciler
+import com.example.mobileapp.core.network.CoachForegroundCoordinator
+import com.example.mobileapp.core.network.CoachingWsClient
 import com.example.mobileapp.core.run.RunNotifications
 import com.example.mobileapp.ui.auth.OnboardingScreen
 import com.example.mobileapp.ui.capture.CurrentRunScreen
@@ -37,7 +38,15 @@ class MainActivity : ComponentActivity() {
     private val userProfileRepository: UserProfileRepository by inject()
     private val activeRunRepository: ActiveRunRepository by inject()
     private val hexCaptureEngine: HexCaptureEngine by inject()
-    private val runReconciler: RunReconciler by inject()
+    // M8.5: per-foreground coaching-freshness ordering (open the live channel,
+    // replay unsynced runs, refresh the pull coach once if a new run credited).
+    private val coachForegroundCoordinator: CoachForegroundCoordinator by inject()
+    // M8.3B: single process-scoped real-time coaching WebSocket, tied to the
+    // activity's foreground so it is up while the user is in the app and
+    // released on backgrounding (idempotent connect/disconnect — tab
+    // navigation never duplicates it). Connect is initiated by the coordinator
+    // above (before reconciliation); disconnect lives here on backgrounding.
+    private val coachingWsClient: CoachingWsClient by inject()
 
     /** Live reference to the current Voyager [Navigator], for notification-tap deep links. */
     private var navigator: Navigator? = null
@@ -72,16 +81,27 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Fix A: on every foreground, replay any unsynced runs through the normal
-     * server sync path (single-flight inside RunReconciler, off the main
-     * thread). A run is marked synced only after the server confirms success,
-     * and the server dedupes on run_id — so foreground reconciliation can
-     * never double-credit. It runs off the main thread and returns immediately
-     * when there is nothing to replay.
+     * Fix A + M8.5: on every foreground, (1) open the real-time coaching
+     * channel FIRST so a run credited by the replay below can still arrive as a
+     * live push, then (2) replay any unsynced runs through the normal server
+     * sync path (single-flight inside RunReconciler, off the main thread — a
+     * run is marked synced only after the server confirms success and the
+     * server dedupes on run_id, so it can never double-credit), and (3) if the
+     * replay actually credited a new run, refresh the pull coach once so a
+     * fresh response surfaces even when no live push arrives (WS down /
+     * suppressed). Opening the channel is best-effort and never blocks or
+     * aborts the replay — all ordering lives in CoachForegroundCoordinator.
      */
     override fun onStart() {
         super.onStart()
-        lifecycleScope.launch { runReconciler.reconcileUnsyncedRuns() }
+        lifecycleScope.launch { coachForegroundCoordinator.onForeground() }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Backgrounded = nobody is looking at the Home coach card; drop the
+        // socket (no reconnect scheduled until the next foreground).
+        coachingWsClient.disconnect()
     }
 
     /**

@@ -165,6 +165,40 @@ class CoachingSessionManager:
         with self._lock:
             return len(self._sessions.get(user_id, ()))
 
+    def has_live_sessions(self, user_id: str) -> bool:
+        """True if the user has at least one registered session right now.
+
+        M8.3A gates background AI generation on this so it never pays for a
+        coaching push nobody is connected to receive.
+        """
+        with self._lock:
+            return bool(self._sessions.get(user_id))
+
+    # ── outbound fan-out (shared by raw triggers + AI coaching messages) ────
+
+    def _fanout(self, user_id: str, envelope: str) -> None:
+        """Enqueue ``envelope`` to every live session for ``user_id``.
+
+        Runs on the producer thread. It only snapshots the registry and
+        schedules queue puts (never sends), so it can neither block nor fail
+        the caller; every failure path is contained in ``_enqueue``.
+        """
+        with self._lock:
+            targets = list(self._sessions.get(user_id, ()))
+        for session in targets:
+            self._enqueue(session, envelope)
+
+    def send_to_user(self, user_id: str, envelope: str) -> None:
+        """Push an already-serialized wire envelope to a user's live sessions.
+
+        M8.3A additive: the AI push stage (coach/push.py) delivers its
+        ``coaching_message`` envelopes here, reusing the exact fan-out,
+        per-session bounded queue and failure containment as raw triggers.
+        M8.2's ``handle_trigger`` keeps producing ``coaching_trigger``
+        envelopes and is unchanged.
+        """
+        self._fanout(user_id, envelope)
+
     # ── trigger subscription (producer thread) ──────────────────────────────
 
     def handle_trigger(self, trigger: CoachingTrigger) -> None:
@@ -173,15 +207,12 @@ class CoachingSessionManager:
 
         Runs on the producer thread. It only snapshots the registry and
         schedules queue puts (never sends), so it can neither block nor fail
-        the run sync; every failure path below is contained.
+        the run sync; every failure path below is contained. The envelope is
+        only serialized when the user has at least one live session.
         """
-        with self._lock:
-            targets = list(self._sessions.get(str(trigger.user_id), ()))
-        if not targets:
+        if not self.has_live_sessions(str(trigger.user_id)):
             return
-        envelope = serialize_trigger(trigger)
-        for session in targets:
-            self._enqueue(session, envelope)
+        self._fanout(str(trigger.user_id), serialize_trigger(trigger))
 
     def _enqueue(self, session: _Session, envelope: str) -> None:
         if session.closed:
