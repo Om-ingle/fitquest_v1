@@ -74,14 +74,37 @@ android {
         }
         buildConfigField("String", "MAPTILER_API_KEY", "\"$mapTilerApiKey\"")
         buildConfigField("String", "MAPTILER_STYLE_URL", "\"$mapTilerStyleUrl\"")
+    }
 
-        // FastAPI backend base URL (no trailing path; Retrofit requires a
-        // trailing slash on the host root). Default targets the Android
-        // emulator's alias for the host machine's localhost, where
-        // `uvicorn app.main:app --port 8000` runs during development.
-        // Override per environment via BACKEND_BASE_URL in apps/app/.env.
-        val backendBaseUrl = envOrDefault("BACKEND_BASE_URL", "http://10.0.2.2:8000/")
-        buildConfigField("String", "BACKEND_BASE_URL", "\"$backendBaseUrl\"")
+    // Two backend flavors (same app logic, only the backend URL differs).
+    // The base URL field lives in the flavors, NOT defaultConfig, so each
+    // variant is pinned by its flavor. Variants: <flavor><buildType>, e.g.
+    // railwayDebug / localDebug.
+    flavorDimensions += "backend"
+    productFlavors {
+        create("railway") {
+            dimension = "backend"
+            // Production: the deployed Railway backend. Deliberately NOT
+            // env-overridable (no envOrDefault) so a local .env carrying a
+            // LAN IP can never leak into the production APK.
+            buildConfigField(
+                "String",
+                "BACKEND_BASE_URL",
+                "\"https://fitquest-api-production.up.railway.app/\"",
+            )
+        }
+        create("local") {
+            dimension = "backend"
+            // Laptop-LAN fallback: reuses the EXISTING override chain so the
+            // laptop IP can be re-supplied on demo day WITHOUT touching
+            // source code — set BACKEND_BASE_URL in apps/app/.env (or as an
+            // environment variable) and rebuild. Default is the Android
+            // emulator's alias for the host's localhost.
+            //   emulator:  http://10.0.2.2:8000/
+            //   device:    http://<LAPTOP_LAN_IP>:8000/
+            val backendBaseUrl = envOrDefault("BACKEND_BASE_URL", "http://10.0.2.2:8000/")
+            buildConfigField("String", "BACKEND_BASE_URL", "\"$backendBaseUrl\"")
+        }
     }
 
     buildTypes {
