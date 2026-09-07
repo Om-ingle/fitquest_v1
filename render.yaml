@@ -1,0 +1,33 @@
+# Minimal Render Blueprint for the FitQuest FastAPI backend (apps/api).
+# Deliberately no database resource: FitQuest already uses Supabase
+# PostgreSQL via DATABASE_URL — Render must connect to it, not create one.
+# Secrets (DATABASE_URL, GEMINI_API_KEY, ...) are set in the Render
+# Dashboard as sync: false env vars, never in this file.
+services:
+  - type: web
+    name: fitquest-api
+    runtime: python
+    rootDir: apps/api
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: LLM_PROVIDER
+        sync: false
+      - key: AGENTROUTER_MODEL
+        sync: false
+      - key: AGENTROUTER_BASE_URL
+        sync: false
+      - key: AGENTIC_API_KEY
+        sync: false

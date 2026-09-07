@@ -1,11 +1,15 @@
-fastapi
-uvicorn[standard]
-sqlmodel
-SQLAlchemy
-pydantic-settings
-python-jose[cryptography]
-alembic
-psycopg2-binary
-h3
+# Versions pinned to the locally verified working set (2026-09-07, Python
+# 3.12.7) so Render builds don't resolve to unknown newer releases.
+# xgboost intentionally NOT here: it is a dev/test-only ML tool, not used
+# by the running application (see requirements-dev.txt).
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+sqlmodel==0.0.42
+SQLAlchemy==2.0.52
+pydantic-settings==2.15.0
+python-jose[cryptography]==3.5.0
+alembic==1.19.2
+psycopg2-binary==2.9.12
+h3==4.5.0
 # HTTP client for the Gemini embedding/LLM REST providers (Phase 4C.2).
-httpx
+httpx==0.28.1
