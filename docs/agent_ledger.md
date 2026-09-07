@@ -492,3 +492,111 @@
   3,500 steps, fresh run_ids, no hexes) were test pushes against the dev user.
   No Git operations performed; no key values printed; M9 not started.
 
+## [2026-09-07 08:38] - Task: M9.3 — Final Pre-Demo Reliability & AI Preflight
+
+- **Objective:** Presentation-readiness audit/verification ONLY (not a feature
+  sprint): prove the backend boots via `apps/api`, the dev-user DB is clean for a
+  first run, the AI provider answers a real coach request, one run trigger flows
+  end-to-end to a live `coaching_message`, AI failure degrades gracefully, the
+  post-M9.2 offline/sync reconcile path holds (run_id idempotency), the real
+  Samsung device runs a clean start→FGS→finish→sync→coach loop with no M9.2
+  regression, and the full test suites are green. Per the task's explicit rules
+  this milestone made NO code changes where existing behavior already works —
+  the whole milestone is verification evidence, not diff.
+- **Assumptions Declared:**
+  - Backend starts via the apps/api venv exactly as Stable Requirement #2
+    (`./.venv/Scripts/python.exe -m uvicorn app.main:app`); DATABASE_URL uses the
+    Supavisor pooler (no IPv6 route to the direct host — stable req #3/#4).
+  - Dev identity is the fixed auth stub `DEV_USER_ID = 00000000-…-000000000001`;
+    live demo DB is already seeded (hexownership/runsession FKs reference it) so
+    no startup auto-seed is required and none was added.
+  - Live AI provider config is `LLM_PROVIDER=agentrouter` +
+    `AGENTIC_API_KEY`/`AGENTROUTER_BASE_URL`/`AGENTROUTER_MODEL=deepseek-v4-flash`;
+    embeddings stay on Gemini (frozen 1536-dim pgvector). Keys verified present,
+    never printed.
+  - Android device Samsung RZ8R90661CF is the demo device; the installed APK
+    already reflects the uncommitted M9.2 working-tree fixes (HexCaptureEngine
+    exactly-once accounting + LocationTrackingManager best-effort subscribe).
+- **Modifications Matrix:**
+  - `docs/agent_ledger.md` (this entry, appended)
+  - `.agent-context.md` (M9.3 active-memory bullet appended under the dynamic
+    block)
+  - NO source, schema, test, or migration files were changed by M9.3.
+  - Test harness files created under the job tmp dir only (ws_e2e.py,
+    area5_ai_fail.py) — outside the repo, not tracked.
+- **Decision Logic:**
+  - *Pure verification over diff:* the task text forbids redesign/feature work and
+    prefers proving existing behavior. Every area was exercised live against the
+    real running backend + real Supabase + the real device, with unit suites only
+    where live proof would mutate demo data or was already covered.
+  - *AI-failure probe was side-effect-free:* a SECOND uvicorn instance was booted
+    on :8001 with only `AGENTROUTER_BASE_URL` overridden to a dead port (env-var
+    only, root `.env` untouched, process torn down). Coach returned a graceful
+    HTTP 502 (`ConnectError`), the instance stayed alive, and a run-sync replay
+    of an already-applied run_id returned `already_processed=true` — zero credit,
+    zero mutation. This doubles as the Area 6 idempotency proof.
+  - *Dev-data discipline:* all live run mutations used either fresh run_ids
+    (three pushes: R1 1,200 + R2 2,000 earlier in-session, plus a 0-step
+    device run that changed nothing) or replayed an already-processed run_id.
+    Demo dev-user lifetime is 20,894 steps, no phantom territory created.
+  - *Device run was zero-mutation:* the stationary phone finished with 0 steps /
+    0 XP / 0 hexes yet still produced "✓ Synced with server" and a fresh
+    workout_completed → PushCoach → new "⚡ Live coaching" message — proving the
+    real chain on-device without altering demo stats.
+- **Result Status:** All 9 areas PASS (details in the M9.3 report, section by
+  section): backend boot/health/Supabase; dev user + FK integrity (0 orphans);
+  live grounded coach 200; full WS push E2E + device receive + native TTS;
+  graceful 502 under provider failure with zero crashes; run_id idempotency
+  (already_processed=true replay); device sanity loop (launch→permissions→Start
+  Capture→FGS notif id=1001→Stop&Finish→"Synced with server"→new live coach
+  card, no FATAL anywhere); backend 391 passed + Android 153 passed (0 failures/
+  0 errors/0 skipped) + assembleDebug BUILD SUCCESSFUL. M9.3 is DONE. No Git
+  operations performed; no secrets printed. Note: M8.5–M9.2 do not have their
+  own ledger/context entries (pre-existing gap, not authored here); this entry
+  records the M9.3 superseding state.
+
+
+## [2026-09-07 09:35] - Task: M9.4 — Final Presentation Polish & Demo Readiness
+
+- **Scope Discipline:** Feature freeze honored. NO product features, architecture
+  changes, or AI/WS/TTS/RunReconciler/capture-accounting modifications. The
+  uncommitted M9.2 working-tree fixes (HexCaptureEngine exactly-once step
+  accounting + LocationTrackingManager best-effort subscribe) were left exactly
+  as found and re-verified as part of the build/test gates.
+- **Modifications Matrix:**
+  - `README.md` — corrected two stale claims only: (1) "the app does not yet
+    call the backend" → replaced with the real backend-connected state (run
+    sync, shared map, server leaderboard/coach, WS live coaching, TTS);
+    (2) removed emulator dev-simulator instructions referencing `useDevLocation`
+    /`useDevSteps` toggles that no longer exist in `AppModule.kt` (the simulators
+    are dead code) — replaced with "use a real device" guidance.
+  - `docs/DEMO_DAY_CHECKLIST.md` — NEW concise practical checklist (before-demo
+    setup, demo flow, contingencies).
+  - `docs/agent_ledger.md` (this entry) + `.agent-context.md` (M9.4 bullet).
+  - NO Kotlin, backend, schema, test, or migration files changed.
+- **UI Audit (read-only):** All demo-path screens audited
+  (HomeTab/CurrentRunScreen/MainHub/LeaderboardTab/ProfileTab + fetchers).
+  Every network card (rules-engine coach, AI coach, leaderboard) has a
+  terminal loading→success/error state with manual Retry and finite timeouts
+  (45 s read > backend 30 s LLM timeout); no fake content on failure; no
+  forever-spinners; no raw error text. Back navigation stops tracking first;
+  recovery prompt blocks fresh-run controls. Zero presentation-breaking
+  findings → zero app code changes needed.
+- **Demo Flow Verification (Samsung RZ8R90661CF, live backend :8000):** All
+  PASS — cold launch (no crash); Home rich (Lvl 11, streak, both coach cards,
+  grounded chip); Start Run → map/HUD; Start Capture → RunTrackingService FGS
+  notification id=1001 + HIGH_ACCURACY location request live (M9.2 re-arm
+  verified); Stop & Finish → "✓ Synced with server"; Home → NEW session row +
+  "⚡ Live coaching" fresh card referencing the just-completed run +
+  `CoachingTts: utterance done id=fq-coach-1` (native TTS spoke it); Rank tab
+  → server leaderboard Rank #1 of 6 with YOU badge. Stationary indoor phone
+  (no GPS fix) → 0 steps/0 hexes, honestly reported; movement capture already
+  proven in M9.3 on the same device.
+- **Demo Data:** unchanged by design — dev user "devuser" 10 hexes/rank 1,
+  6 leaderboard players, 4 prior sessions, Lvl 11. The M9.4 device run added
+  one real 0-step synced session row (honest history, no data reset).
+- **Tests/Build:** Android unit 153 passed (0 failures/0 errors/0 skipped;
+  release variant), assembleDebug BUILD SUCCESSFUL. Backend suite not re-run
+  (no backend files changed; M9.3 baseline 391 passed stands).
+- **Result Status:** M9.4 DONE. Final presentation path is clean. No Git
+  operations; no secrets printed.

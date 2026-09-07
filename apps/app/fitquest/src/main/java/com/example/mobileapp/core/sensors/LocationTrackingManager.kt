@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
 import android.os.Looper
+import android.util.Log
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -34,8 +35,29 @@ class LocationTrackingManager(
             }
         }
 
-        fusedLocationProviderClient.requestLocationUpdates(request, callback, Looper.getMainLooper())
-        awaitClose { fusedLocationProviderClient.removeLocationUpdates(callback) }
+        try {
+            // Missing ACCESS_FINE/COARSE_LOCATION makes this throw a
+            // SecurityException synchronously. The capture engine can be
+            // constructed before permissions are granted (onboarding "Skip for
+            // Now", permissions revoked while the process is alive), so the
+            // failure must never crash the app: subscribe best-effort and emit
+            // no fixes until a later subscription attempt succeeds (the engine
+            // re-arms on each run start).
+            fusedLocationProviderClient.requestLocationUpdates(request, callback, Looper.getMainLooper())
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Location permission not granted; location monitoring disabled (best-effort)", e)
+        } catch (e: RuntimeException) {
+            Log.e(TAG, "Location subscription unavailable; location monitoring disabled (best-effort)", e)
+        }
+        awaitClose {
+            try {
+                fusedLocationProviderClient.removeLocationUpdates(callback)
+            } catch (e: RuntimeException) {
+                // Permission may have been revoked mid-flow; teardown is
+                // best-effort and must not crash the cancelling coroutine.
+                Log.w(TAG, "Location update teardown failed (best-effort)", e)
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -47,5 +69,9 @@ class LocationTrackingManager(
         } catch (e: Exception) {
             onResult(null)
         }
+    }
+
+    private companion object {
+        const val TAG = "LocationTracking"
     }
 }

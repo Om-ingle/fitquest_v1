@@ -44,8 +44,11 @@ alembic upgrade head      # create/update the database schema
 uvicorn app.main:app --reload
 ```
 
-> The Android app is currently local-first; it does not yet call the backend.
-> Client↔backend integration is planned for Phase 2 (see `FitQuest_SRS.md`).
+> The Android app is backend-connected: completed runs sync to the FastAPI
+> backend (server-authoritative XP/territory), the map fetches shared
+> territory, the leaderboard and AI coach cards are server-backed, and live
+> coaching arrives over WebSocket with native TTS. Backend integration is
+> verified end-to-end; see `FitQuest_SRS.md` and `docs/` for details.
 
 ### H3 Native Libraries
 
@@ -62,18 +65,11 @@ fitquest/src/main/jniLibs/
 
 ### Step Counter Sensor
 
-Android emulators **do not** have a hardware step-counter sensor (`TYPE_STEP_COUNTER`).
-To test the step-tracking and hex-capture flow on an emulator, use the built-in dev simulators:
-
-1. Open `di/AppModule.kt`
-2. Set the dev toggles:
-   ```kotlin
-   val useDevLocation = true   // mock GPS walk path
-   val useDevSteps = true      // synthetic step counter (2 steps/sec)
-   ```
-3. Build and run. The app will simulate walking along a predefined path and emit synthetic steps.
-
-> **TODO:** The default walk path is configured in `DevLocationSimulator.DEFAULT_WALK_PATH` (currently set to Connaught Place, Delhi). Change this to a location near you for easier testing.
+Android emulators **do not** have a hardware step-counter sensor (`TYPE_STEP_COUNTER`),
+and the old dev simulators (`DevLocationSimulator`/`DevStepSimulator`) are no
+longer wired into the app. Use a **real device** to exercise the step-capture
+flow — the full demo (run → H3 capture → sync → AI coach → TTS) is verified
+on a physical Samsung device.
 
 ### Location on Emulator
 

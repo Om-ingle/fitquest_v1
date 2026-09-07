@@ -118,7 +118,7 @@ The Service then replies with a gamified `RunSyncSummary`:
 ```
 
 ### Map Viewports (Zoom-Aware)
-The map API (`POST /api/v1/map/viewport`) accepts bounding boxes and zoom levels from MapLibre.
+The map API (`GET /api/v1/map/viewport`) accepts bounding boxes and zoom levels from MapLibre.
 * **Zoom >= 14 (Street Level):** The API executes bounding box exact SELECTs and returns `HexDetailResponse` (with `is_owned_by_me` boolean and `king_username`).
 * **Zoom < 14 (City Level):** The API uses `h3_to_parent(hex_id, 6)` via DB raw SQL matching to build `HeatmapResponse` objects, returning aggregated zones outlining which player holds the most territory in a macro-grid.
 
@@ -127,7 +127,14 @@ The `UserProfileResponse` strips away graph data, returning simple top-level att
 
 ---
 
-## 🔐 Authentication Ecosystem
+## 🔐 Authentication Ecosystem (Deferred — Design Intent Only)
+
+> **Status: NOT IMPLEMENTED.** Per SRS §4.2 authentication is postponed. The live
+> backend uses a fixed development-user stub (`get_current_user` in
+> `app/api/dependencies.py`); no request carries a real JWT and no
+> `supabase.auth` verifier runs. The numbered flow below is intended future
+> design, not current behavior.
+
 1. **Supabase Client Flow:** Android registers/authenticates via Supabase directly.
 2. **Postgres Sync Trigger:** Supabase creates the `user` table row natively using database triggers upon sign up.
 3. **API Authorizer:** The Mobile app attaches the Bearer JWT to the headers. FastAPI (`dependencies.py`) takes that token and passes it to the `supabase-py` verifier (`supabase.auth.get_user()`) to decode the incoming `UUID`.

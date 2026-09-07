@@ -21,8 +21,69 @@ data class HexCaptureSnapshot(
     val currentLocation: GeoPoint? = null,
     val sessionSteps: Int = 0,
     val hexesToSteps: Map<String, Int> = emptyMap(),
-    val nearbyHexIds: List<String> = emptyList()
-)
+    val nearbyHexIds: List<String> = emptyList(),
+    /**
+     * Steps taken while no hex was known yet (no GPS fix / indexer down), kept
+     * in the run total and buffered here for exactly-once attribution to the
+     * first hex that becomes available. UI ignores this field; it exists so the
+     * buffer is mutated atomically with the rest of the state.
+     */
+    val pendingStepsBeforeHex: Int = 0
+) {
+    /**
+     * Accounts a freshly detected step delta. While a hex is known the delta is
+     * attributed to that hex (existing behavior); before the first hex it is
+     * retained in [sessionSteps] and buffered in [pendingStepsBeforeHex] instead
+     * of being silently dropped (M9.2 P1-1). Deltas outside a run (the sensor
+     * flow is only collected between start/stop tracking) are ignored, matching
+     * the collector lifecycle and protecting against a late delta after stop.
+     */
+    fun applyStepDelta(delta: Int): HexCaptureSnapshot {
+        if (!isTracking) return this
+        val targetHex = currentHexId
+        return if (targetHex != null) {
+            val updated = hexesToSteps.toMutableMap()
+            updated[targetHex] = (updated[targetHex] ?: 0) + delta
+            copy(sessionSteps = sessionSteps + delta, hexesToSteps = updated)
+        } else {
+            copy(
+                sessionSteps = sessionSteps + delta,
+                pendingStepsBeforeHex = pendingStepsBeforeHex + delta
+            )
+        }
+    }
+
+    /**
+     * Applies a location fix. Existing behavior: while tracking, the current hex
+     * is registered in [hexesToSteps] the first time it is seen. Additionally,
+     * when buffered pre-hex steps exist and a hex has just become known, those
+     * steps are attributed to that hex exactly once and the buffer is cleared —
+     * they are never added to [sessionSteps] again (no double count).
+     */
+    fun applyLocationUpdate(
+        hexId: String?,
+        nearby: List<String>,
+        location: GeoPoint
+    ): HexCaptureSnapshot {
+        val updated = copy(
+            currentLocation = location,
+            currentHexId = hexId,
+            nearbyHexIds = nearby
+        )
+        if (!isTracking || hexId == null) return updated
+
+        val hexMap = hexesToSteps.toMutableMap()
+        if (!hexMap.containsKey(hexId)) {
+            hexMap[hexId] = 0
+        }
+        val buffered = pendingStepsBeforeHex
+        if (buffered > 0) {
+            hexMap[hexId] = (hexMap[hexId] ?: 0) + buffered
+            return updated.copy(hexesToSteps = hexMap, pendingStepsBeforeHex = 0)
+        }
+        return updated.copy(hexesToSteps = hexMap)
+    }
+}
 
 class HexCaptureEngine(
     private val stepSensorManager: StepSensorManager,
@@ -71,21 +132,7 @@ class HexCaptureEngine(
         } else emptyList()
 
         _state.update { snapshot ->
-            val updated = snapshot.copy(
-                currentLocation = GeoPoint(latitude, longitude),
-                currentHexId = hexId,
-                nearbyHexIds = nearby
-            )
-
-            if (snapshot.isTracking && hexId != null) {
-                val hexMap = snapshot.hexesToSteps.toMutableMap()
-                if (!hexMap.containsKey(hexId)) {
-                    hexMap[hexId] = 0
-                }
-                updated.copy(hexesToSteps = hexMap)
-            } else {
-                updated
-            }
+            snapshot.applyLocationUpdate(hexId, nearby, GeoPoint(latitude, longitude))
         }
     }
 
@@ -97,10 +144,17 @@ class HexCaptureEngine(
             it.copy(
                 isTracking = true,
                 sessionSteps = 0,
-                hexesToSteps = initialHexMap
+                hexesToSteps = initialHexMap,
+                pendingStepsBeforeHex = 0
             )
         }
 
+        // Re-arm the location subscription at run start. Best-effort: when the
+        // engine was constructed before location permission was granted (e.g.
+        // onboarding "Skip for Now"), the initial silent subscription emits
+        // nothing — starting a run re-attempts it so a freshly granted run gets
+        // a live GPS fix instead of a permanently dead monitor.
+        startLocationMonitoring()
         startStepsCollection()
     }
 
@@ -125,10 +179,16 @@ class HexCaptureEngine(
             snapshot.copy(
                 isTracking = true,
                 sessionSteps = initialSessionSteps.coerceAtLeast(0),
-                hexesToSteps = seeded
+                hexesToSteps = seeded,
+                // Pre-hex steps from before a process death are not part of any
+                // hex; they live in sessionSteps (persisted above). The buffer
+                // is not checkpointed, so it restarts empty for the new session.
+                pendingStepsBeforeHex = 0
             )
         }
 
+        // Same re-arm rationale as [startTracking].
+        startLocationMonitoring()
         startStepsCollection()
     }
 
@@ -137,13 +197,7 @@ class HexCaptureEngine(
         stepsJob = scope.launch {
             stepSensorManager.observeStepDeltas().collect { delta ->
                 _state.update { snapshot ->
-                    val targetHex = snapshot.currentHexId ?: return@update snapshot
-                    val updated = snapshot.hexesToSteps.toMutableMap()
-                    updated[targetHex] = (updated[targetHex] ?: 0) + delta
-                    snapshot.copy(
-                        sessionSteps = snapshot.sessionSteps + delta,
-                        hexesToSteps = updated
-                    )
+                    snapshot.applyStepDelta(delta)
                 }
             }
         }
@@ -166,7 +220,8 @@ class HexCaptureEngine(
             it.copy(
                 isTracking = false,
                 sessionSteps = 0,
-                hexesToSteps = emptyMap()
+                hexesToSteps = emptyMap(),
+                pendingStepsBeforeHex = 0
             )
         }
     }
