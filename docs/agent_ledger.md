@@ -755,3 +755,14 @@
   `applyStepDelta`'s paused branch remains unit-test-verified only.
   Documentation updated: §6, §7, §7.4, §7.6 (new), §13 (D-028), §14, §17. No Git
   operations performed; no secrets printed.
+
+## [2026-09-17 07:53] - Task: Fix API pytest coach isolation failure
+
+- **Objective:** Diagnose the failing GitHub Actions job `API tests (pytest)` and implement the smallest fix for `tests/test_isolation.py::test_coach_reports_the_callers_own_user_id`.
+- **Assumptions Declared:** CI intentionally runs without AI provider keys; `/api/v1/coach` returns provider-configuration HTTP errors unless tests monkeypatch providers with fakes.
+- **Modifications Matrix:**
+  - `apps/api/tests/test_isolation.py` (modified: injected fake embedding/LLM providers for the coach isolation test and asserted `200` status before reading response fields)
+  - `docs/agent_ledger.md` (modified: appended this execution record)
+  - `.agent-context.md` (modified: updated active working objective in dynamic block)
+- **Decision Logic:** The failure was a hermeticity gap in the test, not a production endpoint regression. The isolation test called `/api/v1/coach` without monkeypatched providers, so CI produced an error payload without `context`, causing `KeyError`. I fixed only that test by patching `get_embedding_provider` and `get_llm_provider` to deterministic local fakes and by asserting HTTP status first, preserving the endpoint's existing 503 behavior tests elsewhere while keeping this isolation assertion meaningful.
+- **Result Status:** Reproduced failure locally, then verified `tests/test_isolation.py::test_coach_reports_the_callers_own_user_id` and `tests/test_coach_api.py::test_coach_endpoint_provider_not_configured_is_503` both pass; full `tests/test_isolation.py` passes (`12 passed`). Secret scan clean. Parallel validation passed (CodeQL trivial skip; code review tool unavailable in environment). `graphify update .` attempted but `graphify` CLI was unavailable.
