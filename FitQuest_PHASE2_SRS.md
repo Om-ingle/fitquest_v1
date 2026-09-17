@@ -10,11 +10,11 @@
 | **Project name** | FitQuest |
 | **File** | `FitQuest_PHASE2_SRS.md` (repository root) |
 | **Purpose** | Long-term living development context. Enables a developer or AI agent to resume after 6–12 months without re-deriving settled decisions or rewriting working systems. |
-| **Last updated** | 2026-09-12 (M10 implementation) |
+| **Last updated** | 2026-09-17 (M11 verification & release-readiness pass) |
 | **Current project phase** | Phase 2 — post-presentation development |
-| **Current milestone** | **M10 — Telemetry & Run Integrity** — code complete; real-device verification outstanding (§7.5) |
+| **Current milestone** | **M11 — Real Authentication & Identity** — code complete and conditionally accepted; real-account end-to-end verification outstanding (§18) |
 | **Document status** | Active, living. Update at the end of every milestone. |
-| **Repository state at authoring** | branch `main`, HEAD `46c332e` ("docs: add Phase 2 living SRS"). M10's changes are **uncommitted working-tree modifications** — the project owner controls Git history (§16). |
+| **Repository state at authoring** | branch `main`, HEAD `0b79cf7` (merge of PR #1, which fixed the API test), **pushed to `origin/main`**. CI run #5 on that SHA: **both jobs green**. §18.6's changes (conftest neutralisation, `test_migration_0004.py`, `test_config.py`, `apps/app/tools/apk_auth_scan.py`, `ci.yml` comment) are **uncommitted** in the working tree by instruction — no Git operation was performed. |
 
 ### Source-of-truth hierarchy
 
@@ -317,6 +317,8 @@ Sequencing is driven by two constraints, not by feature appeal: **correctness it
 ---
 
 ### M11 — Real Authentication & Identity
+
+**Status 2026-09-17: CODE COMPLETE, conditionally accepted — NOT complete.** The plan below is the pre-implementation intent and is preserved as written; the as-built state, the verification evidence, the outstanding device E2E and the migration 0004 runbook are in **§18**. Two blockers remain: the publishable anon key is not yet in `apps/app/.env`, and migration 0004 has not been applied (live revision is still `0003`).
 
 - **Objective:** Replace the fixed dev user with real identity.
 - **Scope:** F-04, plus CI (F-12) and the RAG ingestion route (F-18) which is unblocked by auth.
@@ -885,7 +887,7 @@ Update this section at the end of every milestone. Do not mark anything complete
 |---|---|---|---|
 | **M1–M9** (pre-Phase 2) | COMPLETE | through 2026-09-07 | See §4 and `docs/agent_ledger.md` |
 | **M10 — Telemetry & Run Integrity** | **COMPLETE** | code 2026-09-12; device-verified 2026-09-12 | §7.5, §7.6; `:app:testRailwayDebugUnitTest` 161 tests / 22 classes, 0 failures; Samsung SM-M325F scenarios A–D; Home `165 / 8000` against `userdailyactivity.steps=165` |
-| **M11 — Real Authentication & Identity** | NOT STARTED | — | — |
+| **M11 — Real Authentication & Identity** | **CODE COMPLETE — conditionally accepted. NOT complete: real-account E2E unverified and migration 0004 unapplied** | code 2026-09-17 | §18. Android **244 tests / 0 failures** in both flavors (freshly executed); backend **413 passed** credentialed, credential-free, and with a bogus key present; CI run #5 (`0b79cf7`) **green in both jobs**; migration state verified live as `0003` with `user.auth_subject` absent |
 | **M12 — Live Coaching Reliability** | NOT STARTED | — | — |
 | **M13 — Shared World** | NOT STARTED | — | — |
 | **M14 — Server-Authoritative Progression** | NOT STARTED | — | — |
@@ -1008,6 +1010,272 @@ Git: M10's changes are uncommitted. The project owner commits.
 **Then — M11 (Real Authentication & Identity).** M11 changes the `get_current_user()` contract. M10's device criteria are now closed, so the dependency is satisfied.
 
 > **Do not start M11 until M10's exit criteria (§7.4) are satisfied.**
+
+**Update 2026-09-17 — superseded.** M11's code is complete and its suites are green locally and in CI, but M11 is **not** complete: the real-account end-to-end criterion is unverified, and **migration 0004 has not been applied**. Current next action:
+
+```
+CURRENT MILESTONE:
+M11 — Real Authentication & Identity  (code complete, conditionally accepted)
+
+NEXT ACTION:
+1. Add SUPABASE_URL + SUPABASE_ANON_KEY to apps/app/.env (§18.5).
+2. Obtain explicit approval, then apply migration 0004 (§18.3).
+3. Rebuild + install the railway-debug APK and run the two-account E2E (§18.2).
+4. Re-run CI on the resulting commit.
+
+BLOCKED ON: project-owner authorization for the migration, and the
+publishable anon key. Neither may be supplied by an agent.
+
+Git: the project owner controls history (§16). No agent Git operations.
+```
+
+---
+
+## 18. M11 Verification & Release-Readiness Record (2026-09-17)
+
+### 18.1 Verified in this pass
+
+| Claim | Evidence |
+|---|---|
+| Android suite | **244 tests, 0 failures, 0 errors, 0 skipped** in *both* flavors. Re-run after the first attempt reported only `UP-TO-DATE` (which proves nothing): `:app:cleanTestLocalDebugUnitTest :app:cleanTestRailwayDebugUnitTest` then the test tasks; result XMLs re-written 2026-09-17 12:46, 29 files per flavor. |
+| Backend suite | **417 passed** in 131 s (`./.venv/Scripts/python.exe -m pytest -q`). Was 413 before the four tests added in §18.6. |
+| Backend suite, credential-free | **417 passed** in 143 s from a credential-free copy of the working tree with **no `.env` and no provider env vars** — identical to the credentialed run, which is what demonstrates hermeticity |
+| Backend suite, bogus credential present | **417 passed** in 138 s with `GEMINI_API_KEY`/`AGENTIC_API_KEY` set to a fake value — proves no test constructs a real provider (§18.4, §18.6) |
+| Migration state | Live read-only query: `alembic_version = 0003`; `user.auth_subject` **absent**; `ix_user_auth_subject` **absent**; 6 user rows. Confirmed independently over both pooler ports. |
+| JWKS / issuer | Project publishes exactly one `ES256`/`P-256` signing key at `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` (HTTP 200), matching `security.py`'s pinned `ALGORITHMS = ["ES256"]` |
+| Railway auth behavior | `GET /health` → 200; authenticated route with no header → `401 {"detail":"Not authenticated"}`; with a well-formed ES256 token naming an unknown `kid` → `401 {"detail":"Invalid or expired token"}` (**not** 503 — so `SUPABASE_URL` *is* configured and JWKS *is* reachable); WS handshake with no token → 403 |
+
+**Existing alembic round-trip tests pass** (`test_migration_applies_and_reverts_cleanly`, `test_rag_migration_applies_and_reverts_cleanly`).
+
+### 18.2 Outstanding — real-account end-to-end (the M11 exit criterion)
+
+Not yet run. Requires a rebuilt APK (§18.5), two pre-existing Supabase accounts, and — for anything beyond sign-in — migration 0004 (§18.3). **The project owner signs in personally**; no credential is to be requested, typed, logged or stored by an agent.
+
+| # | Check | How |
+|---|---|---|
+| 1 | Login | Sign in as Account A on the device; `adb logcat` shows no auth error |
+| 2 | Session restoration | Force-stop, relaunch: lands in the app, not on Login |
+| 3 | Authenticated REST | `coach`/`leaderboard`/`recommendations` return 200, not 401 |
+| 4 | First-login provisioning | A new `user` row exists with `auth_subject` set; `username` derived from the email local part |
+| 5 | Cross-user isolation | Account B cannot see Account A's runs, hexes, or profile; leaderboard marks only B as current user |
+| 6 | Coaching WebSocket | Handshake succeeds with a token (was 403 without) |
+| 7 | Sign-out | Clears the session; `/api/v1/*` returns 401 again; WS is closed |
+| 8 | Re-login | Returns as the same internal user id (no duplicate row) |
+
+Evidence to capture: `adb logcat` excerpts (redacted), the `user` rows via a read-only query, and the HTTP status of each route. **Tokens must never be printed** — log only presence/length.
+
+### 18.3 Migration 0004 runbook — PREPARED, NOT EXECUTED
+
+Purely additive and un-backfilled: `auth_subject` is added NULL to every existing row (6 users), so no existing data is rewritten, reassigned or orphaned. Applying it is safe for the currently-installed pre-M11 APK, which still receives 401 before any query runs.
+
+**Pre-flight — use SESSION mode (port 5432), not the transaction pooler.** `DATABASE_URL` currently uses `:6543` (transaction mode). Supavisor's transaction mode does not guarantee a session for the duration of a migration's transactional DDL; port **5432** is session mode. The credentials are otherwise identical (user `postgres.<project-ref>`, same password), and **both ports were verified connecting** to this project (PostgreSQL 17.6).
+
+```bash
+cd F:/Projects/fitquest/apps/api
+
+# Records the pre-state. Note the port 6543 -> 5432 rewrite; it never echoes the password.
+DB_SESSION="$(grep -E '^DATABASE_URL=' ../../.env | cut -d= -f2- | sed 's/:6543\//:5432\//')"
+
+# 1. Pre-flight: record revision and row count BEFORE touching anything.
+DATABASE_URL="$DB_SESSION" ./.venv/Scripts/python.exe -m alembic current   # expect: 0003
+
+# 2. APPLY (only after explicit approval).
+DATABASE_URL="$DB_SESSION" ./.venv/Scripts/python.exe -m alembic upgrade 0004
+
+# 3. Verify.
+DATABASE_URL="$DB_SESSION" ./.venv/Scripts/python.exe -m alembic current   # expect: 0004
+```
+
+**Verification queries** (Supabase SQL editor or the same session URL):
+
+```sql
+SELECT version_num FROM alembic_version;                     -- expect 0004
+SELECT column_name, data_type, is_nullable
+  FROM information_schema.columns
+ WHERE table_name = 'user' AND column_name = 'auth_subject'; -- expect 1 row, nullable=YES
+SELECT indexname, indexdef FROM pg_indexes
+ WHERE tablename = 'user' AND indexname = 'ix_user_auth_subject';  -- expect 1 UNIQUE row
+SELECT count(*) AS users, count(auth_subject) AS linked FROM "user";  -- expect 6, 0
+```
+
+**Rollback** (drops the column and index only; no data is touched):
+
+```bash
+DATABASE_URL="$DB_SESSION" ./.venv/Scripts/python.exe -m alembic downgrade 0003
+```
+
+**Rollback verification:** `alembic current` → `0003`; the two queries above return 0 rows; `SELECT count(*) FROM "user"` still 6; the `user` table still exists. Verified to this standard on a throwaway SQLite database in this pass (column and index both removed, table intact) — **the PostgreSQL path is asserted by inspection, not yet executed.**
+
+### 18.4 Continuous integration — the determinism defect and its fix
+
+Run #1 (`f7f27b9`, the M11 commit) was the workflow's first real run: **Android green, API red.** Reproduced exactly in a credential-free checkout — `412 passed, 1 failed` against `413 passed` locally. One test, `test_isolation.py::test_coach_reports_the_callers_own_user_id`, asserted on a `context` key that only exists on the coach endpoint's success path; with no LLM key configured that path is a 503/DTO-less body, so the assertion raised `KeyError: 'context'`. Locally it passed **by making a real, billable LLM call** — which is why the wall-clock differed (47 s in CI vs 134 s locally).
+
+The workflow's own header claimed the only patched boundary was the JWKS fetch. That claim was false, and its reassuring tone is what let the defect reach `main`. Fixed in `79d9481` (provider factories replaced with deterministic fakes in that test), and the header now states the two patched boundaries, the history, and the reason a green local run is not evidence. **Run #5 (`0b79cf7`, merge to `main`) is green in both jobs.**
+
+Residual gap, **now closed** (§18.6). The suite was hermetic on the runner because the runner has no credentials; a developer's own `.env` could still supply one, and `conftest.py` did not neutralise the provider variables the way it already neutralised `SUPABASE_URL` and `ENVIRONMENT`. That was not hypothetical: the repository-root `.env` carries live `GEMINI_API_KEY` and `AGENTIC_API_KEY` values, and `Settings` loads `env_file=(".env", "../../.env")`, so **every local test run before §18.6 had a billable key in `settings`** — the precise condition that let run #1's defect pass locally. §18.6 removes it.
+
+### 18.5 Android client configuration and rebuild
+
+**1. Configure.** Add both lines to `apps/app/.env` (gitignored; the Gradle script reads this file — `envOrDefault` also accepts the same names as OS environment variables):
+
+```
+SUPABASE_URL="<project-url>"
+SUPABASE_ANON_KEY="<publishable anon key>"
+```
+
+The anon key is Supabase's **publishable** key: it identifies the project and confers no authority. The **service-role / secret key must never be placed here** — it bypasses Row Level Security and would ship inside the APK. `apps/app/.env` currently holds `MAPTILER_*` and `BACKEND_BASE_URL` only.
+
+**2. Note the stale local URL.** `BACKEND_BASE_URL=http://192.168.0.36:8000/` is unreachable — this machine is now on `192.168.31.107/24`. This affects only the `local` flavor; the `railway` flavor deliberately ignores `.env` for the backend URL and is pinned to `https://fitquest-api-production.up.railway.app/`. Fix it only if device testing is meant to hit a locally-run API.
+
+**3. Build and install** (no secrets on the command line; the values come from the file):
+
+```bash
+cd F:/Projects/fitquest/apps/app
+./gradlew :app:assembleRailwayDebug
+```
+
+**Built and verified in this pass** — `BUILD SUCCESSFUL in 52s`, artifact
+`fitquest/build/outputs/apk/railway/debug/app-railway-debug.apk` (74,029,300 bytes, 2026-09-17 15:32).
+**It is not yet the installable APK:** it was built while `SUPABASE_URL` and `SUPABASE_ANON_KEY` were still
+empty, and the generated `BuildConfig` confirms both compile to `""`. Installable only after step 1 is
+filled in and the build is re-run. The build is still worth having done: it proves the M11 sources compile
+into the `railway` variant and that the production URL is pinned (below).
+
+```bash
+# Install. Try this first — it preserves app data.
+"F:/Android/Sdk/platform-tools/adb.exe" install -r \
+  fitquest/build/outputs/apk/railway/debug/app-railway-debug.apk
+
+# Only if that reports INSTALL_FAILED_UPDATE_INCOMPATIBLE (signature mismatch):
+# the installed build was signed with a different key. There is no way to replace
+# it in place, so the old package must be removed first.
+#   ⚠ This ERASES the app's data — local session, cached runs, Room database.
+#     Nothing unsynced survives. It does NOT touch the backend or any other app.
+"F:/Android/Sdk/platform-tools/adb.exe" uninstall com.example.mobileapp
+"F:/Android/Sdk/platform-tools/adb.exe" install \
+  fitquest/build/outputs/apk/railway/debug/app-railway-debug.apk
+```
+
+No device was attached during this pass (`adb devices` → empty), so the install was **not** run and is not
+authorized; reconnect the SM-M325F with USB debugging enabled first.
+
+**4. Confirm the install actually carries auth** — the failure mode that produced §18.5's whole reason for existing. The APK installed on 2026-09-17 was last updated **2026-09-12 11:51:22**, five days before the auth code existed, and its DEX contained **zero** occurrences of `SupabaseAuthClient`, `AuthInterceptor`, `AuthSession`, `EncryptedTokenStore` and no `supabase.co` string at all.
+
+```bash
+adb shell dumpsys package com.example.mobileapp | grep -E "lastUpdateTime|versionName"
+```
+
+`lastUpdateTime` must be *now*. A client with no token can only ever produce the 401/403 pair recorded in §18.1 — which is exactly what was mistaken for a backend fault.
+
+The stronger check is to scan the installed binary itself, which is what distinguishes "installed something" from "installed auth". This prints class names and public URLs and **never a key**:
+
+```bash
+cd F:/Projects/fitquest
+adb shell pm path com.example.mobileapp                 # -> package:/data/app/.../base.apk
+MSYS_NO_PATHCONV=1 adb pull <that path> /tmp/installed.apk
+apps/api/.venv/Scripts/python.exe apps/app/tools/apk_auth_scan.py /tmp/installed.apk
+```
+
+(`apps/app/tools/apk_auth_scan.py` was added in §18.6; it needs only the standard library, so any Python
+3.10+ works. Exit status is 1 if a required M11 class is missing, so it can gate a build.)
+
+Run against the APK built in this pass, that scan reports **every M11 class present** — `SupabaseAuthClient` 51, `LoginScreen` 78, `AuthSession` 37, `EncryptedTokenStore` 14, `AuthInterceptor` 12, `SupabaseAuthApi` 8, `TokenRefreshAuthenticator` 8 — with `fitquest-api-production` ×2 and **`10.0.2.2` 0, `192.168.` 0**, confirming the `railway` flavor's pinned production URL leaked no emulator or LAN fallback. `supabase.co` is also 0, which is the expected reading for the empty-configuration build and is how the scan shows step 1 has not been done yet.
+
+### 18.6 Hermeticity hardening, migration coverage, and the M11 APK (2026-09-17, second pass)
+
+**A. The suite is now hermetic by construction, not by accident.**
+
+`tests/conftest.py` empties `GEMINI_API_KEY`, `AGENTIC_API_KEY`, `AGENT_ROUTER_API_KEY`,
+`SUPABASE_SECRET_KEY` and `SUPABASE_SERVICE_ROLE_KEY`, and pins `LLM_PROVIDER=gemini`, before
+`app.core.config` is imported. Environment variables outrank the dotenv file in pydantic-settings, so
+this removes the credential `env_file=(".env", "../../.env")` would otherwise load.
+
+This closes a real hole rather than a theoretical one. The repository-root `.env` holds live
+`GEMINI_API_KEY` and `AGENTIC_API_KEY` values, and `Settings` loads it on every local run — so before
+this change every developer test run had a billable key in `settings`, which is precisely how run #1's
+defect passed locally while failing on the runner (§18.4). Neutralising it in configuration means the
+same mistake now fails on the developer's machine, where a failure is cheap, instead of surviving to CI.
+
+Two guard tests were added to `tests/test_config.py` so the block cannot be quietly dropped or moved
+below the app import: one asserts the live `settings` object has no provider credentials, the other
+writes a `.env` containing a key and asserts it still cannot configure a provider.
+
+**B. Migration 0004's round trip is now asserted.** `tests/test_migration_0004.py` (new) pins both ends
+to explicit revisions and asserts: the column exists and is **nullable** after upgrade (0004 backfills
+nothing, so a NOT NULL column would have failed on a non-empty table); the index exists, is on exactly
+`auth_subject`, and is **`unique`** — not cosmetic, since `resolve_or_provision_user` races on insert and
+uses this index as the arbiter, so a non-unique index would let two concurrent first logins of one
+account create two internal users. After downgrade it asserts both are gone, the `user` table survives
+with exactly its pre-0004 columns, a control index from 0001 (`ix_user_username`) is untouched, and a row
+written while 0004 was applied keeps its `username`, `total_lifetime_steps`, `total_hexes_captured`,
+`current_streak` and `longest_streak`. A second test pins that re-issuing `upgrade 0004` is a no-op, which
+is what makes the runbook command safe to retry after an ambiguous failure.
+
+**Both assertions were mutation-tested**, because a test that passes proves nothing until it can fail:
+setting `unique=False` in 0004 produces `assert 0 == 1`; making `downgrade()` a no-op produces
+`assert 'auth_subject' not in {...}`. The migration was restored byte-identical afterwards (confirmed
+clean against HEAD).
+
+**C. The three required runs.** From a credential-free copy of the working tree (no `.env` anywhere on
+the path, `app` import verified to resolve inside that copy):
+
+| Run | Environment | Result |
+|---|---|---|
+| a | clean — no `.env`, no provider variables | **417 passed** in 143 s |
+| b | bogus provider credentials (`GEMINI_API_KEY=not-a-real-key`, …) | **417 passed** in 138 s |
+| c | normal local environment (repo-root `.env` loaded) | **417 passed** in 131 s |
+
+417 = the previous 413 plus the four tests added above. Run (a) is the strongest of the three as evidence
+and run (b) is now a regression guard for the neutralisation itself (it passes only because conftest
+overrides the credentials); run (c) remains the weakest, which is the whole reason (a) and (b) exist.
+
+**D. The M11 APK is built, configured, and verified.** Two builds, and the difference between them is
+the point.
+
+*Build 1 (unconfigured).* `./gradlew :app:assembleRailwayDebug` → `BUILD SUCCESSFUL in 52s`. Generated
+`BuildConfig`: `BACKEND_BASE_URL = "https://fitquest-api-production.up.railway.app/"` but
+`SUPABASE_URL = ""` and `SUPABASE_ANON_KEY = ""`. DEX scan: every required M11 class present,
+`fitquest-api-production` ×2, **`10.0.2.2` 0 / `192.168.` 0** (no fallback URL leaked), and
+`supabase.co` **0** — the scan reporting the missing configuration rather than hiding it. Kept in the
+record because it is the useful demonstration that the scan distinguishes a configured build from a
+merely-compiled one.
+
+*Build 2 (configured and installable).* After `apps/app/.env` was filled in, the rebuild gave
+`BUILD SUCCESSFUL in 32s`, 74,103,039 bytes. `BuildConfig` now carries the real project URL and key.
+DEX scan: `supabase.co` **2** (was 0), every required M11 class still present, fallback URLs still 0.
+A byte scan for JWT-shaped literals finds **exactly one**, 208 characters, `role = "anon"`,
+`ref = "gdskasfgolpfdfaftxwk"`, ×2 — i.e. the anon key specifically, confirming by claim that the
+**service-role key was not** the value compiled in, which is the one mistake here that would be
+catastrophic rather than merely broken.
+
+Two configuration hazards were caught and fixed while doing this, both worth recording:
+
+1. **The key was appended, not substituted.** `.env` briefly held four `SUPABASE_*` lines — the two
+   empty placeholders this pass had added, plus the two real values below them. Gradle's parser builds a
+   map with `.toMap()`, so the *last* occurrence wins and the real values took effect; but a file whose
+   correctness depends on which duplicate a reader picks up is a trap, and the empty placeholders were
+   removed so each key now has exactly one definition. **Verified empirically, not by reading Kotlin
+   semantics:** the generated `BuildConfig` carries the real values.
+2. **An anon key and a service-role key are both JWTs and look alike.** They were distinguished by
+   decoding the `role` claim before building, not by trusting the filename or the dashboard's copy
+   button.
+
+The URL/key pair was confirmed a working pair before any of this, by a non-secret probe: GoTrue
+`/auth/v1/settings` → 200, `/auth/v1/.well-known/jwks.json` → 200 publishing **exactly one ES256/P-256
+key** (matching `security.py`'s pinned `ALGORITHMS = ["ES256"]`), and `/auth/v1/user` with no token →
+401. No credential was transmitted; the anon key is a publishable value and was never printed.
+
+`apps/app/tools/apk_auth_scan.py` was added to make that check reproducible; it prints class-name and
+URL occurrence counts and never a key, and exits 1 if a required class is missing.
+
+**Still blocked, unchanged:** migration 0004 is **not applied** (live `alembic_version = 0003`,
+`user.auth_subject` absent); the two-account device E2E (§18.2) has not run. The anon key blocker is
+**resolved** — `apps/app/.env` is filled in and the installable APK exists. The device (SM-M325F,
+`RZ8R90661CF`) is attached and still carries the pre-M11 build (`lastUpdateTime` 2026-09-12 11:51:22);
+**the install was not executed — it is not authorized.** Because `auth_subject` does not exist, the
+first authenticated request from the new client returns **500** (`UndefinedColumn`) rather than 401, so
+sign-in and REST/WebSocket checks (d) and (e) cannot pass until 0004 is applied. The rebuild and
+migration 0004 must land together for the E2E to mean anything.
 
 ---
 

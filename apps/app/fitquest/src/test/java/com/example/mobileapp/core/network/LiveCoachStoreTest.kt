@@ -6,6 +6,7 @@ import com.example.mobileapp.core.network.models.CoachRetrievalInfo
 import com.example.mobileapp.core.network.models.CoachResponse
 import com.example.mobileapp.core.network.models.FitnessContextResponse
 import com.example.mobileapp.core.network.models.Recommendation
+import com.example.mobileapp.core.session.AccountScopeGuard
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
@@ -61,6 +62,14 @@ class LiveCoachStoreTest {
         capturedHexCount = 0, capturedHexIdsJson = "", xpEarned = 0, isSynced = true
     )
 
+    /**
+     * An armed account-scope guard: the store drops every push while the guard
+     * is closed, which is covered by `AccountScopeFailClosedTest`. These tests
+     * are about push/replace/clear semantics, so the gate is opened to get it
+     * out of the way.
+     */
+    private fun armedGuard() = AccountScopeGuard().apply { setActive(true) }
+
     private class FakeApi(
         private val behavior: suspend () -> CoachResponse
     ) : FitQuestApi {
@@ -108,7 +117,7 @@ class LiveCoachStoreTest {
 
     @Test
     fun `starts empty and publishes the latest live message`() = runBlocking {
-        val store = LiveCoachStore()
+        val store = LiveCoachStore(armedGuard())
         assertNull(store.message.first())
 
         store.publish(coachResponse(message = "live push"))
@@ -118,7 +127,7 @@ class LiveCoachStoreTest {
 
     @Test
     fun `a newer push replaces the previous one`() = runBlocking {
-        val store = LiveCoachStore()
+        val store = LiveCoachStore(armedGuard())
         store.publish(coachResponse(message = "first push"))
         store.publish(coachResponse(message = "second push"))
 
@@ -127,7 +136,7 @@ class LiveCoachStoreTest {
 
     @Test
     fun `clear returns the store to empty`() = runBlocking {
-        val store = LiveCoachStore()
+        val store = LiveCoachStore(armedGuard())
         store.publish(coachResponse())
         store.clear()
 
@@ -140,8 +149,8 @@ class LiveCoachStoreTest {
     fun `a live push does not overwrite the pull cache state`() = runBlocking {
         val api = FakeApi { coachResponse(message = "pull advice") }
         val repo = FakeRunSessionRepository(listOf(session("a")))
-        val pullCache = CoachCache(CoachFetcher(api), repo)
-        val liveStore = LiveCoachStore()
+        val pullCache = CoachCache(CoachFetcher(api), repo, armedGuard())
+        val liveStore = LiveCoachStore(armedGuard())
 
         pullCache.ensureLoaded()                                   // Home pull path
         assertEquals(1, api.getCoachCalls)
@@ -164,7 +173,7 @@ class LiveCoachStoreTest {
 
     @Test
     fun `live and pull responses stay fully independent objects`() {
-        val liveStore = LiveCoachStore()
+        val liveStore = LiveCoachStore(armedGuard())
         val pull = coachResponse(message = "pull advice")
 
         liveStore.publish(coachResponse(message = "live realtime push"))

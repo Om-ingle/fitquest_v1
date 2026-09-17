@@ -154,6 +154,18 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions {
+        unitTests {
+            // The local data layer logs when it refuses to write without a
+            // signed-in account (FitQuestOwner), and the JVM tests that exercise
+            // those paths run against the stub android.jar, where every method
+            // throws "Stub!" by default. Without this the refusal path would
+            // crash the test instead of being observable in it — which is
+            // exactly the code path the account-scoping tests need to reach.
+            // No test asserts on a stub throwing, so nothing else is affected.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {

@@ -6,6 +6,7 @@ import com.example.mobileapp.core.network.models.CoachResponse
 import com.example.mobileapp.core.network.models.CoachRetrievalInfo
 import com.example.mobileapp.core.network.models.FitnessContextResponse
 import com.example.mobileapp.core.network.models.Recommendation
+import com.example.mobileapp.core.session.AccountScopeGuard
 import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
@@ -60,6 +61,18 @@ class CoachCacheTest {
         capturedHexCount = 0, capturedHexIdsJson = "", xpEarned = 0, isSynced = true
     )
 
+    /**
+     * An armed account-scope guard.
+     *
+     * The cache refuses to fetch at all while the guard is closed — that is the
+     * fail-closed property, and it has its own tests in
+     * `AccountScopeFailClosedTest`. Everything here is about the cache's own
+     * fetch/refresh/single-flight behaviour, so the guard is armed to get it out
+     * of the way; leaving it closed would make every test below pass for the
+     * wrong reason (nothing fetched, so nothing asserted about).
+     */
+    private fun armedGuard() = AccountScopeGuard().apply { setActive(true) }
+
     private class FakeApi(
         private val behavior: suspend () -> CoachResponse
     ) : FitQuestApi {
@@ -110,7 +123,8 @@ class CoachCacheTest {
         val api = FakeApi { coachResponse() }
         val cache = CoachCache(
             CoachFetcher(api),
-            FakeRunSessionRepository(listOf(session("a")))
+            FakeRunSessionRepository(listOf(session("a"))),
+            armedGuard()
         )
 
         cache.ensureLoaded()          // first Home entry → fetch
@@ -126,7 +140,7 @@ class CoachCacheTest {
     fun `a newly synced run triggers one fresh request then settles`() = runBlocking {
         val repo = FakeRunSessionRepository(listOf(session("a")))
         val api = FakeApi { coachResponse(message = "fresh") }
-        val cache = CoachCache(CoachFetcher(api), repo)
+        val cache = CoachCache(CoachFetcher(api), repo, armedGuard())
 
         cache.ensureLoaded()
         assertEquals(1, api.getCoachCalls)
@@ -146,7 +160,7 @@ class CoachCacheTest {
         val api = FakeApi {
             if (down) throw IOException("no internet") else coachResponse()
         }
-        val cache = CoachCache(CoachFetcher(api), FakeRunSessionRepository(listOf(session("a"))))
+        val cache = CoachCache(CoachFetcher(api), FakeRunSessionRepository(listOf(session("a"))), armedGuard())
 
         cache.ensureLoaded()           // backend down on first load
         assertEquals(1, api.getCoachCalls)
@@ -168,7 +182,7 @@ class CoachCacheTest {
         val api = FakeApi {
             if (down) throw IOException("flaky") else coachResponse(message = "cached advice")
         }
-        val cache = CoachCache(CoachFetcher(api), repo)
+        val cache = CoachCache(CoachFetcher(api), repo, armedGuard())
 
         cache.ensureLoaded()
         assertEquals(1, api.getCoachCalls)
@@ -188,7 +202,7 @@ class CoachCacheTest {
             gate.await()
             coachResponse()
         }
-        val cache = CoachCache(CoachFetcher(api), FakeRunSessionRepository(listOf(session("a"))))
+        val cache = CoachCache(CoachFetcher(api), FakeRunSessionRepository(listOf(session("a"))), armedGuard())
 
         val first = launch { cache.ensureLoaded() }
         delay(50)                       // let the first load reach the (blocking) network call

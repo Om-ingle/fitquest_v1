@@ -1,6 +1,7 @@
 package com.example.mobileapp.core.network
 
 import com.example.mobileapp.core.network.models.CoachResponse
+import com.example.mobileapp.core.session.AccountScopeGuard
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,17 +25,30 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * Thread-safety: [MutableStateFlow] makes publish() safe from the WebSocket's
  * own threads.
+ *
+ * Account scoping: a pushed message is addressed to the account whose session
+ * held the socket open, so it must not survive into the next account's session.
+ * [clear] is called when the signed-in account changes — the same path that
+ * clears [CoachCache]. The socket itself is separately closed on sign-out by
+ * `MainActivity` and on backgrounding.
+ *
+ * Fail closed: a pushed message arrives unsolicited, so it is the easiest of the
+ * three surfaces to leave behind. [publish] is therefore refused outright while
+ * [AccountScopeGuard] is closed — nothing is watching for an account change, so
+ * a message accepted now would have nothing to clear it later. [clear] is never
+ * gated: emptying is always the safe direction.
  */
-class LiveCoachStore {
+class LiveCoachStore(private val accountScope: AccountScopeGuard) {
 
     private val _message = MutableStateFlow<CoachResponse?>(null)
     val message: StateFlow<CoachResponse?> = _message.asStateFlow()
 
     fun publish(response: CoachResponse) {
+        if (!accountScope.isActive()) return
         _message.value = response
     }
 
-    /** Test/ops hook. The UI and client never clear it themselves. */
+    /** Drop the last pushed message, so it cannot outlive the account it was for. */
     fun clear() {
         _message.value = null
     }

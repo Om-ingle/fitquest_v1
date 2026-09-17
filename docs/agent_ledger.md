@@ -766,3 +766,450 @@
   - `.agent-context.md` (modified: updated active working objective in dynamic block)
 - **Decision Logic:** The failure was a hermeticity gap in the test, not a production endpoint regression. The isolation test called `/api/v1/coach` without monkeypatched providers, so CI produced an error payload without `context`, causing `KeyError`. I fixed only that test by patching `get_embedding_provider` and `get_llm_provider` to deterministic local fakes and by asserting HTTP status first, preserving the endpoint's existing 503 behavior tests elsewhere while keeping this isolation assertion meaningful.
 - **Result Status:** Reproduced failure locally, then verified `tests/test_isolation.py::test_coach_reports_the_callers_own_user_id` and `tests/test_coach_api.py::test_coach_endpoint_provider_not_configured_is_503` both pass; full `tests/test_isolation.py` passes (`12 passed`). Secret scan clean. Parallel validation passed (CodeQL trivial skip; code review tool unavailable in environment). `graphify update .` attempted but `graphify` CLI was unavailable.
+
+## [2026-09-17 14:10] - Task: M11 verification — 401/403 diagnosis, CI determinism proof, migration runbook
+
+- **Objective:** Diagnose the reported Railway 401 (REST) / 403 (WebSocket) behaviour,
+  independently verify the Stage 4 test claims, prove CI determinism with and without
+  credentials, inspect the 0004 downgrade path, and prepare (not execute) the migration
+  runbook. Read-only on all infrastructure; no migration, no deploy, no Git operations.
+- **Assumptions Declared:** The reported 401/403 are a client-side identity gap until a
+  probe distinguishes a missing token from a rejected one; a local green suite is not
+  evidence of CI determinism, because a developer `.env` supplies credentials the runner
+  does not have.
+- **Modifications Matrix:**
+  - `.github/workflows/ci.yml` (modified: replaced the false hermeticity claim — it
+    asserted the JWKS fetch was the *only* patched boundary — with an accurate statement
+    of the two patched boundaries, the run #1 history, and why a green local run is not
+    evidence).
+  - `FitQuest_PHASE2_SRS.md` (modified: §1 doc control; §6 M11 status; §14 M11 milestone
+    row; §17 current-next-action superseded; **§18 new** — verification record, two-account
+    E2E procedure, migration 0004 runbook, CI determinism record, Android rebuild procedure).
+  - `apps/app/.env` (modified, gitignored: added empty `SUPABASE_URL` / `SUPABASE_ANON_KEY`
+    placeholders with the publishable-vs-service-role warning; empty is treated as
+    "not configured" by `envOrDefault`, so behaviour is unchanged).
+  - `docs/agent_ledger.md` (modified: this record).
+- **Diagnosis of the 401/403 (the significant finding).** The installed APK was last
+  updated **2026-09-12 11:51:22** — five days before the M11 auth code existed. Pulled the
+  APK from the device and scanned its DEX: **zero** occurrences of `SupabaseAuthClient`,
+  `AuthInterceptor`, `AuthSession`, `EncryptedTokenStore`, `SupabaseAuthApi`,
+  `TokenRefreshAuthenticator`, and **zero** `supabase.co` strings; `fitquest-api-production`
+  present (×2) and no LAN IP, so it is a pre-M11 `railwayDebug` build. It has no sign-in,
+  no token store and no interceptor, so it can never send an `Authorization` header — and
+  the M11 backend answers exactly 401 (`Not authenticated`) / 403 to a tokenless client.
+  Live probes confirm the backend is correct, not broken: `/health` 200; no header → 401
+  `Not authenticated`; a well-formed ES256 token naming an unknown `kid` → 401
+  `Invalid or expired token` — **not** 503, which is what an unconfigured `SUPABASE_URL`
+  would produce, so the issuer/JWKS path is configured and reachable. The project publishes
+  exactly one ES256/P-256 key, matching `security.py`'s pinned algorithm.
+  **Latent second issue:** because `user.auth_subject` does not exist yet, fixing only the
+  client converts the 401s into 500s on the first authenticated request.
+- **CI determinism.** Run #1 (`f7f27b9`) was the workflow's first real run: Android green,
+  API red. Reproduced in a credential-free `git archive` checkout as `412 passed, 1 failed`
+  against `413 passed` locally — one test, `test_isolation.py::test_coach_reports_the_callers_own_user_id`,
+  asserting on a `context` key that only a successful (real, billable) LLM call produces;
+  without a key the endpoint answers 503, so the assertion raised `KeyError: 'context'`.
+  That test was fixed in `79d9481`; I verified the fix rather than assuming it, in three
+  runs: **413 passed** with credentials, **413 passed** with no `.env` and no provider
+  variables, and **413 passed** with deliberately *bogus* credentials present (132.7 s) —
+  the last being the discriminating proof, since a test still reaching a provider would
+  have failed on the fake key instead of passing. CI run #5 (`0b79cf7`, merge to `main`)
+  is green in both jobs with every step `success`.
+- **Migration 0004 downgrade — test-only defect, NOT a migration defect.** Ran the round
+  trip on a throwaway SQLite database: after `upgrade 0004` the column and unique index are
+  present; after `downgrade 0003` both are gone and the `user` table is intact. The
+  Postgres operations (`drop_index` then `drop_column`) are standard and safe for this
+  shape. The defect is in coverage: neither alembic round-trip test asserts anything about
+  `auth_subject` or `ix_user_auth_subject` on the way up or down, so 0004's schema is
+  covered only incidentally by `returncode == 0`. Compounding it, the functional suite
+  builds its schema with `SQLModel.metadata.create_all()`, which takes the column straight
+  from the model — so model↔migration drift is structurally invisible to 413 tests and
+  visible only in the two subprocess alembic tests, which do not look at 0004. No production
+  data was touched.
+- **Migration state (verified live, read-only, over both pooler ports):** PostgreSQL 17.6;
+  `alembic_version = 0003`; `user.auth_subject` absent; `ix_user_auth_subject` absent;
+  6 user rows. **0004 is NOT applied.**
+- **Session-mode verification for the migration command.** `DATABASE_URL` currently uses
+  `:6543` (Supavisor transaction mode), whose pooling does not guarantee a session across a
+  migration's transactional DDL. Port **5432** (session mode) was verified connecting with
+  the same credentials (`postgres.<project-ref>`, password masked) and reading the same
+  revision. The runbook rewrites the port with `sed 's/:6543\//:5432\//'` so the password is
+  never handled or echoed.
+- **Runbook prepared, NOT executed** (SRS §18.3): `alembic current` → `upgrade 0004` →
+  `alembic current`, plus verification SQL (`alembic_version`, `information_schema.columns`,
+  `pg_indexes`, and a `count(*) / count(auth_subject)` row check expecting 6 / 0), rollback
+  `alembic downgrade 0003`, and rollback verification to the same standard.
+- **Secret handling:** no secret was printed, logged or written to a tracked file. The
+  publishable anon key and the two Supabase accounts are supplied by the project owner; no
+  credential was requested. The project ref appeared once in a masked connection dump — it
+  is not a credential (it ships in the client APK).
+- **Impact statement:** Database migration: **NONE APPLIED**. API contract change: NONE.
+  Production data touched: NONE. Deployment: NONE. Git operations: **NONE** (no commit,
+  push, reset, or branch change) — the working tree holds only the three documentation
+  edits above.
+- **Result Status:** CI determinism FIXED and proven; migration runbook PREPARED; 401/403
+  root-caused to a pre-M11 APK. **M11 remains INCOMPLETE.** Open blockers: (1) the anon key
+  is not in `apps/app/.env`; (2) migration 0004 awaits explicit authorization; (3) the
+  two-account device E2E has not been run. Proposed but not done (needs approval): neutralise
+  the provider variables in `tests/conftest.py` the way `SUPABASE_URL`/`ENVIRONMENT` already
+  are, so hermeticity is structural locally and not only a property of the runner; and add
+  explicit 0004 assertions to an alembic round-trip test.
+
+## [2026-09-17 15:45] - Task: M11 second verification pass — hermeticity hardening, 0004 coverage, M11 APK
+
+- **Objective:** Make the API suite hermetic in configuration rather than by accident, give migration
+  0004 real round-trip coverage, prove the suite in three credential environments, prepare the Android
+  configuration and build the M11 APK, and prepare (not execute) the migration runbook. No migration, no
+  install, no deploy, no Git operation.
+- **Assumptions Declared:** A suite that passes is not a suite that is hermetic — the two coincide only
+  while the machine supplies no credentials; and a test that has never been seen to fail is not evidence
+  of anything.
+- **Modifications Matrix:**
+  - `apps/api/tests/conftest.py` (modified: empties `GEMINI_API_KEY`, `AGENTIC_API_KEY`,
+    `AGENT_ROUTER_API_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY` and pins
+    `LLM_PROVIDER=gemini` before the app import, so `env_file=(".env", "../../.env")` cannot supply a
+    live provider; module docstring updated to match).
+  - `apps/api/tests/test_config.py` (modified: two guard tests — the live `settings` carries no provider
+    credential, and a `.env` *containing* a key still cannot configure a provider).
+  - `apps/api/tests/test_migration_0004.py` (**new**: 0004 round-trip + retry-safety assertions).
+  - `apps/app/tools/apk_auth_scan.py` (**new**: stdlib-only APK inspector; prints class/URL counts, never
+    a key; exits 1 on a missing required class).
+  - `.github/workflows/ci.yml` (modified: the hermeticity comment now records that credentials are
+    neutralised in conftest, so the claim matches the code).
+  - `FitQuest_PHASE2_SRS.md` (modified: §1 repository state corrected to `0b79cf7` + uncommitted tree;
+    §18.1 counts refreshed to 417; §18.4 residual gap marked closed; §18.5 build/install/DEX-scan
+    rewrite; **§18.6 new**).
+  - `docs/agent_ledger.md` (modified: this record).
+- **The hole this closed was not theoretical.** The repository-root `.env` carries live `GEMINI_API_KEY`
+  and `AGENTIC_API_KEY`, and `Settings` loads `env_file=(".env", "../../.env")` — so *every local test run
+  before this change had a billable key in `settings`*. That is exactly the condition that let CI run #1's
+  defect pass locally and fail on the runner. Measured, not assumed: with the repo `.env` present the
+  suite sees a Gemini credential (`True`); after the conftest block it does not.
+- **Migration 0004 coverage — and both assertions mutation-tested.** Setting `unique=False` in 0004
+  produced `assert 0 == 1`; making `downgrade()` a no-op produced `assert 'auth_subject' not in {...}`.
+  The migration file was restored byte-identical (verified clean against HEAD). The `unique` assertion is
+  the substantive one: `resolve_or_provision_user` races on insert and uses this index as the arbiter, so
+  a non-unique index would let two concurrent first logins of one Supabase account create two internal
+  users.
+- **Three runs, all 417 passed** (413 + the 4 new tests): clean credential-free copy of the working tree
+  143 s; bogus credentials 138 s; normal local environment 131 s. The clean copy was used rather than
+  `git archive HEAD` because these changes are uncommitted and an archive would have tested the old code;
+  `app` import was verified to resolve inside the copy.
+- **Android.** `./gradlew :app:assembleRailwayDebug` → `BUILD SUCCESSFUL in 52s`;
+  `app-railway-debug.apk`, 74,029,300 bytes. Generated `BuildConfig`: `BACKEND_BASE_URL =
+  https://fitquest-api-production.up.railway.app/`, `SUPABASE_URL = ""`, `SUPABASE_ANON_KEY = ""`.
+  DEX scan: all 7 required M11 classes present, `fitquest-api-production` ×2, `10.0.2.2` 0, `192.168.` 0,
+  `supabase.co` 0. **The artifact is built but NOT configured and is not the one to install.**
+- **Secret handling:** no secret printed, logged or written to a tracked file. `apps/app/.env` values were
+  read only as lengths; the anon key is never searched for by the scanner. `.env` files verified
+  gitignored; `apps/api/test_fitquest.db` covered by `*.db`; the APK sits under a `/build` ignore.
+- **Impact statement:** Database migration: **NONE APPLIED**. Production data touched: NONE. Device
+  install: **NONE** (no device attached — `adb devices` empty). Deployment: NONE. Git operations: **NONE**.
+- **Result Status:** suite hermetic and proven; 0004 covered and mutation-verified; M11 APK built and
+  verified as an M11 build. **M11 remains INCOMPLETE** — blocked on: the anon key absent from
+  `apps/app/.env`; migration 0004 awaiting explicit authorization (live revision still `0003`,
+  `user.auth_subject` absent); the two-account device E2E unrun. Latent and unchanged: a rebuilt client
+  turns today's 401s into **500**s until 0004 is applied, so the rebuild and the migration must land
+  together.
+
+## [2026-09-17 16:05] - Task: Configure the M11 APK with the anon key and rebuild
+
+- **Objective:** Rebuild the `railway` debug APK now that the project owner has supplied the Supabase
+  URL and anon key, and verify the result carries the M11 client and a valid identity configuration.
+  No install, no migration, no deploy, no Git operation.
+- **Assumptions Declared:** A build that *compiles* is not a build that is *configured*, and a key that
+  works is not necessarily the key that was intended — an anon key and a service-role key are both JWTs
+  and are indistinguishable by eye.
+- **Modifications Matrix:**
+  - `apps/app/.env` (modified, gitignored: the owner appended real `SUPABASE_URL` / `SUPABASE_ANON_KEY`
+    values; the two now-obsolete **empty placeholders** added in the previous pass were removed, so each
+    key has exactly one definition. No value was altered, printed, or logged).
+  - `FitQuest_PHASE2_SRS.md` (modified: §18.6 D rewritten to record both builds and the two
+    configuration hazards; the blocker list updated — the anon-key blocker is now resolved).
+  - `docs/agent_ledger.md` (modified: this record).
+- **Two hazards caught, neither by assuming.**
+  1. The key was **appended, not substituted**: `.env` briefly held four `SUPABASE_*` lines — my two
+     empty placeholders plus the owner's two real values below. Gradle's parser ends in `.toMap()`, so
+     the **last** occurrence wins and the real values did take effect — but a config file whose
+     correctness depends on which duplicate a reader picks is a trap, so the placeholders were deleted.
+     Confirmed empirically rather than by reasoning about Kotlin: the generated `BuildConfig` carries the
+     real values.
+  2. **Verified the key is the anon key BEFORE building it into an APK**, by decoding its `role` claim:
+     `role='anon'`, `ref='gdskasfgolpfdfaftxwk'`. Had it been the service-role key — which also arrives
+     as a `eyJ…` JWT and is equally easy to copy from the same dashboard page — the APK would have
+     shipped a key that bypasses Row Level Security to anyone who unzips it. That is the one mistake in
+     this area that is catastrophic rather than merely broken, so it is checked by claim, not by
+     trusting the filename.
+- **Non-secret configuration probe (no credential transmitted):** GoTrue `/auth/v1/settings` → 200 (the
+  URL+key pair is valid); `/auth/v1/.well-known/jwks.json` → 200 publishing **exactly one ES256/P-256
+  key**, matching `security.py`'s pinned `ALGORITHMS = ["ES256"]`; `/auth/v1/user` with no token → 401.
+  The anon key is a publishable value and was redacted in all output regardless.
+- **Build and verification.** `BUILD SUCCESSFUL in 32s`, `app-railway-debug.apk` 74,103,039 bytes.
+  `BuildConfig`: `BACKEND_BASE_URL=https://fitquest-api-production.up.railway.app/`,
+  `SUPABASE_URL=https://gdskasfgolpfdfaftxwk.supabase.co`, anon key present (208 chars, not echoed).
+  DEX scan: all 7 required M11 classes present; `fitquest-api-production` ×2; `10.0.2.2` 0; `192.168.` 0;
+  **`supabase.co` 0 → 2** (vs build 1). A JWT-literal scan finds exactly one 208-char token with
+  `role='anon'`, ×2 occurrences — so the key, not merely the URL, provably reached the DEX.
+- **A broken check, corrected before it was reported.** The first JWT scan returned 0 literals, which
+  would have been reported as "the key is missing". The regex excluded `.`, and a JWT is
+  `header.payload.signature` — so it matched only the 36-char header and fell under the length floor.
+  Fixed and re-run: 1 distinct token found. The build was never at fault; the evidence-gathering was.
+- **Device state (read-only).** SM-M325F `RZ8R90661CF` is now attached. Still carries the pre-M11 build:
+  `lastUpdateTime=2026-09-12 11:51:22`, `versionName=1.0`. **Install NOT executed — not authorized.**
+- **Secret handling:** no secret printed, logged or written to a tracked file. `.env` values were read as
+  lengths and decoded `role`/`ref` claims only; the key was never echoed, including in the probe output.
+- **Impact statement:** Database migration: **NONE APPLIED**. Production data touched: NONE. Device
+  install: **NONE**. Deployment: NONE. Git operations: **NONE**.
+- **Result Status:** the installable, correctly-configured M11 APK now exists and is verified. **M11
+  remains INCOMPLETE** — blocked on: migration 0004 awaiting explicit authorization (live revision
+  `0003`, `user.auth_subject` absent), and the two-account device E2E unrun. Unchanged and now acute:
+  the first authenticated request from the new client returns **500** (`UndefinedColumn`) rather than
+  401, so E2E steps (d) and (e) cannot pass until 0004 is applied — sign-in itself (a–c) will work.
+
+## [2026-09-17 16:25] - Task: Fix the M11 Android startup crash (Koin interface bindings)
+
+- **Symptom.** The rebuilt M11 APK installed cleanly and then died within ~2s of launch. `am start -W`
+  reported `Status: ok` — it means the intent was delivered, not that the app survived — so the crash was
+  found only by checking `pidof` (empty), `topResumedActivity` (back to the launcher) and
+  `dumpsys activity processes` ("last crashed +14s767ms ago") separately. Launch confirmation by exit
+  status alone would have produced a false "app launched" claim.
+- **Root cause.** `NoBeanDefFoundException: No definition found for type 'okhttp3.Interceptor'`, reached
+  from `MainActivity.onStart` → `CoachForegroundCoordinator` → `RunReconciler` → `RunSyncer` →
+  `FitQuestApi`. `AppModule` registered `AuthInterceptor` and `TokenRefreshAuthenticator` under their
+  CONCRETE types, but `FitQuestApiClient.create(authInterceptor: Interceptor, authenticator: Authenticator)`
+  declares the INTERFACE types, and Koin's `get()` resolves against the declared parameter type. There
+  were **two** missing bindings; the trace named only the first, so fixing `Interceptor` alone would have
+  moved the failure to `Authenticator`. `git log -S 'authInterceptor'` pins the regression to `f7f27b9`
+  ("Phase 2 M11 half"). The `wsOkHttp` client at the second site named the concrete types explicitly and
+  so kept working — which is exactly why both sites had to be corrected together.
+- **Why 244 tests missed it.** Not one of them builds the container. Every test constructs the
+  collaborators directly, so the graph was never assembled outside a device — the defect was reachable
+  only from `MainActivity.onStart`. A green unit suite was not evidence about this class of bug.
+- **Fix (minimal).** `AppModule.kt` only: both registrations changed to `single<Interceptor>` /
+  `single<Authenticator>`, and the second resolution site (`wsOkHttp`) changed to `get<Interceptor>()` /
+  `get<Authenticator>()`. 16 insertions, 4 deletions; no domain logic, backend, schema or migration file
+  touched. `AuthSession`, the single-flight refresh and the `AuthInterceptor` token-at-call-time behaviour
+  are unchanged — the collaborators are still singletons, so there is still exactly one authenticator and
+  Supabase's rotating refresh token is still redeemed once.
+- **New guard: `AppModuleGraphTest` (4 tests).** Starts the real `appModule` via `koinApplication` and
+  resolves the two authenticated clients, plus asserts the resolved instances are the expected types and
+  that both clients receive the SAME authenticator. Written BEFORE the fix and run against the broken
+  code first, so its teeth are measured rather than assumed: 2 of 4 failed pre-fix — the interface lookup
+  returned **null** (`AssertionError`), and the REST client threw the same `InstanceCreationException`/
+  `NoBeanDefFoundException` the device did. One test was found toothless during that run —
+  `assertSame(null, null)` passes on two missing bindings — and was corrected to assert presence first.
+- **Tests.** `:app:testLocalDebugUnitTest` **248 passed, 0 failed, 0 errors, 0 skipped**;
+  `:app:testRailwayDebugUnitTest` **248 passed, 0 failed, 0 errors, 0 skipped** (244 → 248, the four new
+  tests). Both flavors, because they differ in the `BuildConfig` constants compiled in.
+- **Build.** `BUILD SUCCESSFUL`, `app-railway-debug.apk` 74,103,000 bytes, SHA-256
+  `13e2f28ea6c9e4a634753087e6b471e18a152b1644d25642f85cfaecb9bda564`. APK scan PASS: all 7 required M11
+  classes, `fitquest-api-production` ×2, `10.0.2.2`/`192.168.` 0, `supabase.co` ×2 — still configured.
+- **Install.** `adb install -r` → `Success`, **no** `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, so no uninstall
+  and no data loss. `lastUpdateTime=2026-09-17 16:18:45`, `firstInstallTime=2026-09-05 14:22:20`
+  unchanged → updated in place. The installed APK was pulled back and its SHA-256 matched the build
+  byte-for-byte, so the running binary is provably the fixed one.
+- **Launch.** `am force-stop` first, then a genuine cold start (`LaunchState: COLD`, TotalTime 1814ms) so
+  the launch was unambiguously of the new build rather than a process the installer had left behind.
+  Alive after 10s: `pidof` → 31392, `topResumedActivity` → `MainActivity`, **no crash record**. Logcat:
+  `NoBeanDefFoundException` ×**0**, no `FATAL EXCEPTION`, no Koin error. Screenshot confirms the M11
+  `LoginScreen` rendering (Email / Password / Sign in). Login was NOT attempted — not authorized.
+- **Secret handling:** the full logcat buffer was scanned for `eyJ`, `supabase`, `Bearer`, `apikey`,
+  `access_token`, `refresh_token` → **all 0**. The two `password` matches are Samsung's
+  `WifiProfileShare` system service (pid 1440), not this app. Temp diagnostics (pulled APK, screenshot)
+  deleted. No secret printed, logged or written to a tracked file.
+- **Impact statement:** Database migration: **NONE APPLIED**. Production data touched: NONE. Deployment:
+  NONE. Git operations: **NONE** (no commit, push, checkout, revert, reset).
+- **Result Status:** the launch-blocking M11 crash is **fixed and verified on device**. **M11 remains
+  INCOMPLETE** — unchanged blockers: migration 0004 awaiting explicit authorization (live revision
+  `0003`, `user.auth_subject` absent), so the first authenticated request still returns **500**
+  (`UndefinedColumn`) rather than 401 and E2E steps (d)/(e) cannot pass; and the two-account device E2E
+  is unrun. Steps (a)–(c) are now reachable: the app opens and the login screen appears.
+
+## [2026-09-17 17:15] - Task: M11 — account-scoped local storage (the two-account leak)
+
+- **Symptom.** Sign in as Supabase Account B, record one run, log out, sign in as Account A → A sees B's
+  run. Confirmed device-local, not backend: no GET session-list endpoint exists, `HomeTab` reads Room
+  directly, and the live database held 45 rows with **1** distinct `user_id`. Applying migration 0004
+  would not have changed it — nothing about this defect is server-side.
+- **Root cause.** Every local table was a single, unowned row set. `user_profile` was keyed on the literal
+  `"local_user"`, so one row held the level, the lifetime totals, the streak AND `isOnboardingCompleted`
+  for every account that ever signed in — which is also why the second account skipped onboarding.
+  `captured_hexes.hexId`, `daily_quests.id` (`date + slug`) and `achievements.id` (fixed constants) are
+  shared between accounts by construction, so `OnConflictStrategy.IGNORE` silently gave the second
+  account no achievements at all. Plus three process-lifetime things no query could ever filter because
+  they were keyed by nothing: `CoachCache` (one account's coach message, grounded in that account's
+  history), `LiveCoachStore` (the last message pushed down an authenticated socket), and a live run
+  (sensors, foreground notification, ticking timer).
+- **Fix.** `ownerSubject: String` on all six entities, holding the Supabase Auth user id — the JWT `sub`,
+  i.e. the same value the backend resolves to `user.id`, so local rows are attributable to a server-side
+  identity. `IdentityProvider` (a one-method interface `AuthSession` now implements) is the narrow
+  contract the data layer depends on, so `data -> identity` and the scoping logic is testable without a
+  Supabase client, a token store or a network. Every `@Query` names `ownerSubject` and takes the owner
+  first; repositories resolve the subject themselves and **stamp** it on write, so a caller cannot file a
+  row under another account by passing its id. A write with no session is refused and logged rather than
+  filed under a placeholder. `UserProfileEntity`'s key IS the account, which is what makes a new account
+  on this device get a freshly defaulted profile and therefore onboarding (`getProfile` creates the row).
+- **Two hazards that would have made this wrong.** (1) A coach fetch already in flight when the account
+  changes arrives afterwards and repopulates the cache it was just cleared from — solved with a
+  generation counter: `fetch()` remembers the generation it started under and refuses to publish if it
+  changed. (2) `abandonRun` nulls the run, and the service's teardown path deletes the checkpoint — but
+  that checkpoint belongs to the account that started the run and is how it gets the run back. Solved by
+  setting `abandonedForAccountSwitch` **before** `_runId` goes null and checking it once in
+  `shouldClearCheckpointOnStop()`, at the single point both teardown routes converge. The flag is reset
+  in `startRun`, so it cannot leak into the next account's run.
+- **Sign-out is not what makes it safe.** `AccountScopeCoordinator` subscribes to `identity.subject`
+  rather than being called by `signOut()`. A session also ends when the refresh token is rejected
+  mid-request or `restore()` refuses a stored session at startup, and an account switch may never pass
+  through `AuthState.SignedOut` at all — coupling a privacy guarantee to a hook someone has to remember
+  to call is how this defect got here. It clears the caches and tells the run controller; it **deletes
+  nothing**, so each account's history and unfinished checkpoint are exactly as it left them.
+- **Room schema 5 -> 6.** All six tables are rebuilt (create staging -> `INSERT ... SELECT` -> drop ->
+  rename) rather than `ADD COLUMN`, because `ownerSubject` is part of the identity of four of them and
+  SQLite cannot alter a primary key. Rebuilding all six keeps one uniform shape with no DB-level
+  `DEFAULT` anywhere, which is what Room's `TableInfo` validation wants.
+  `fallbackToDestructiveMigration()` was **removed**: with it, any migration gap silently drops and
+  recreates every table — i.e. deletes the user's whole local history with a log line as the only
+  evidence — which directly contradicts "do not silently delete existing rows".
+- **Legacy-row policy: QUARANTINE (documented in the migration KDoc, NOT yet approved).** The device
+  cannot know which account wrote rows that predate the column; the only account identifier ever stored
+  was the token, overwritten on each sign-in. Inferring an owner would mean handing one account another's
+  history — the defect being fixed. So the rows are carried across intact and stamped
+  `__legacy_unowned__`, which no account can match, so no query returns them. Nothing is deleted; they
+  are re-assignable with one `UPDATE` setting `ownerSubject` to the verified subject once the correct
+  account is established. **Device consequence: its 40 runs, 16 hexes, 18 quests, 8 achievements and 1
+  profile stop being visible, and the next account onboards fresh. That is the cost of not guessing, and
+  it is awaiting the owner's decision.**
+- **Tests written before the fix, and their teeth measured rather than assumed.** Five production lines
+  were temporarily reverted (the owner stamp, the scoped observer, the profile key, `coachCache.clear()`,
+  the abandon flag), the suite was run, and **13 of the 277 tests failed — all of them in the four new
+  classes, none elsewhere**; the lines were then restored and verified line-by-line by grep. New:
+  `OwnerScopedDaoSourceTest` (6 tests — every `@Query` filters by owner and binds `:owner`, every scoped
+  entity is keyed by its owner, `"local_user"` is gone, the sentinel cannot collide with a UUID, and the
+  invariant is made to fail on an embedded copy of the pre-fix DAO so it is not vacuous),
+  `AccountScopedLocalDataTest` (13), `AccountScopeCoordinatorTest` (4),
+  `ActiveRunControllerAccountSwitchTest` (7). Two of the new tests failed on first run for real reasons
+  and were fixed: the fake DAOs returned a one-shot snapshot instead of a live query (so the observer
+  test hung — Room's generated DAOs re-emit on change, and a fake that does not makes an observer test
+  pass for the wrong reason), and the source checker conflated the parameter name `owner` with the column
+  `ownerSubject`.
+- **Why the DAO invariant parses source.** Room declares `@Query`/`@Entity`/`@PrimaryKey` with
+  `RetentionPolicy.CLASS` (verified on `room-common-2.6.1` with `javap`: both
+  `kotlin.annotation.AnnotationRetention.BINARY` and `RetentionPolicy.CLASS` are on the class file).
+  CLASS retention is stripped before runtime, so `getAnnotation(Query::class.java)` is null in a JVM test
+  and an annotation-driven invariant would have asserted nothing and still gone green. The checker
+  therefore reads the same Kotlin that Room's KSP processor consumes.
+- **Migration verified against the real device database, read-only.** `tools/verify_migration_5_6.py`
+  copies `fitquest.db` **plus its `-wal`/`-shm`** (committed pages live in the WAL; a bare `.db` copy
+  reports stale row counts) to a temp dir and applies the migration **there**. The SQL is extracted from
+  `FitQuestDatabase.kt` rather than retyped, so the tool cannot verify a copy that has drifted from the
+  shipping code, and the expected shape is parsed from the **entity sources** — an independent source of
+  truth, which is what catches a column typo or a wrong affinity. Result: `user_version` 5 -> 6, all 6
+  tables rebuilt, **83 rows in / 83 out** (40 runs, 16 hexes, 18 quests, 8 achievements, 1 profile),
+  every row carrying the sentinel, **0** rows visible to a real account, columns/order/affinities/NOT
+  NULLs and primary keys matching the entities, no DB-level `DEFAULT`, no stray indices. The tool's first
+  run **failed** and the fault was in the tool — its entity parser skipped properties carrying an
+  annotation, so it dropped `@PrimaryKey val id` and under-reported the entity columns; the migration was
+  correct throughout. Fixed and re-run green. A claim in the migration KDoc that the migrated table is
+  byte-identical in `sqlite_master` to a fresh one was corrected to what is actually true (same parsed
+  shape; the statement text differs by `IF NOT EXISTS`, which Room does not compare). The tool's own
+  hygiene was found wanting on the first runs: `sqlite3.connect`'s context manager commits but does NOT
+  close, so the copied database stayed open, Windows held it locked, and `rmtree(ignore_errors=True)`
+  failed **silently** — leaving two copies of the real database in `%TEMP%`. The connection is now closed
+  explicitly and a failed cleanup prints a loud warning naming the directory. Both stale copies were
+  deleted and the re-run confirms the tool now leaves nothing behind.
+- **Tests.** `:app:testLocalDebugUnitTest` **277 passed, 0 failed**; `:app:testRailwayDebugUnitTest`
+  **277 passed, 0 failed** (both flavors, because they differ in the `BuildConfig` constants compiled in).
+- **Build.** `:app:assembleRailwayDebug` **BUILD SUCCESSFUL**, `app-railway-debug.apk` 74,062,867 bytes.
+- **Impact statement:** Database migration: **NONE APPLIED** — `MIGRATION_5_6` is written, verified
+  against a copy of the real database, and NOT applied to the device. Backend migration 0004: **still not
+  applied**. Production data touched: NONE. Install: **NONE** (not authorized). Git operations: **NONE**.
+- **Result Status:** the two-account isolation defect is **fixed in code and verified by test**; **M11
+  remains INCOMPLETE**. Awaiting the owner on: (a) the legacy-row quarantine policy — its 83 rows become
+  invisible and the next account onboards fresh; (b) authorization to install so the fix can be confirmed
+  on device; (c) migration 0004, unchanged blocker.
+
+## [2026-09-17 17:41] - Task: M11 — quarantine approved, install, and the device E2E (a DI regression found)
+
+- **Scope.** Owner approved the `LEGACY_UNOWNED` quarantine policy and authorized installation of the
+  rebuilt Railway debug APK with `adb install -r` (no uninstall, no data clear, no Git operations), then
+  asked for the account-switch E2E on the connected SM-M325F (RZ8R90661CF).
+- **Install.** Two installs, both `adb install -r`, both **Success** — no
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, no uninstall, no data cleared. The second was required; see the
+  regression below. Launch: process alive on both, crash buffer empty, no `NoBeanDefFoundException`.
+- **Regression found on device — the fix did not work on the first build.** The app launched cleanly and
+  looked healthy, but logcat carried
+  `E FitQuestApp: Account scope observer start failed / Caused by: NoBeanDefFoundException: No definition
+  found for type 'com.example.mobileapp.core.run.RunServiceLauncher'`. `ActiveRunController` declares the
+  `RunServiceLauncher` **interface**; `AppModule` registered only the concrete
+  `ForegroundRunServiceLauncher`. Koin resolves `get()` against the **declared** type, so the controller
+  could not be constructed — and `AccountScopeCoordinator` depends on it, so **the coordinator could not be
+  constructed either and the account-switch reset never ran at all**. Room scoping was unaffected, which is
+  exactly why the data looked right and the failure was invisible. This is the **third** instance of the
+  same mistake in this module (`okhttp3.Interceptor`/`Authenticator` in M11, then `RunSessionEngine` while
+  writing this very module, now `RunServiceLauncher`). It was invisible because `FitQuestApp` catches the
+  failure around `AccountScopeCoordinator().start()` and logs it — no crash, no symptom, no user-visible
+  sign, just a privacy control that was not there.
+- **Fix 1 — the binding.** `single<com.example.mobileapp.core.run.RunServiceLauncher> {
+  ForegroundRunServiceLauncher(get()) }`, with a comment naming the rule and the two prior occurrences.
+- **Fix 2 — make the rule mechanical.** New `di/DeclaredTypeBindingTest`: for every class the module
+  registers, each constructor parameter whose type is an **interface declared in this project** must have a
+  binding registered under that interface's name. Source-parsing, because the slice that broke needs a
+  `Context` and so cannot be instantiated in a JVM test at all — which is precisely why `AppModuleGraphTest`
+  (written after the OkHttp crash, and which resolves the two authenticated clients) does not reach it. The
+  checker reads three registration shapes: explicit generics (`single<X>`), bare registrations
+  (`single { Foo(…) }`, `single { SupabaseAuthClient.create(…) }`), and Room accessors
+  (`single { get<FitQuestDatabase>().hexDao() }` → `HexDao`). Its second test **derives the pre-fix module
+  from the real source** (`single<…RunServiceLauncher> {` → `single {`) rather than retyping a snippet — the
+  first attempt embedded a hand-written snippet that omitted unrelated bindings and so reported five
+  violations instead of one; deriving it means the self-check cannot drift out of describing the code it
+  claims to describe, and it asserts the rewrite applied so a rename cannot make it vacuous.
+- **Migration applied on device (approved) and verified.** `user_version` 5 → 6, no `__v6` staging tables
+  left, primary keys correct (`captured_hexes (ownerSubject, hexId)`, `user_profile (ownerSubject)`).
+  Verified against a **read-only copy** pulled with `run-as` (`exec-out`, no device-side staging, live DB
+  never opened for write). **84 rows quarantined, 0 visible to any account** — 41 runs, 16 hexes, 18
+  quests, 8 achievements, 1 profile. **The count is 84, not the 83 recorded in the previous entry**: the
+  device gained one run at 17:08:55 local, written by the old v5 build *after* the 16:40 backup, so
+  inheriting the sentinel is correct rather than a mis-stamp. Established by diffing the live `run_sessions`
+  id set against the backup (`f5816feb-…` extra, nothing missing) and by its `startedAt` preceding the
+  17:21 migration — checked rather than assumed, because "a new row was stamped legacy" and "an old row
+  migrated" look identical in a row count.
+- **E2E — the original failure, retested end to end on the device.** Sequence: restored session
+  `f0f154ba…` → sign out → sign in `d5dd0cb0…` → onboarding → run created → sign out → sign in
+  `f0f154ba…` → sign out → sign in `d5dd0cb0…`. All 7 transitions logged by `AccountScopeCoordinator`,
+  subject masked to 8 chars, no gaps. Results:
+  - **Onboarding (the specific worry):** the incoming account got a **fresh profile row with
+    `isOnboardingCompleted = 0`** — it did *not* skip onboarding off the previous account's profile. This
+    was the failure mode the quarantined legacy profile would have caused.
+  - **The leak itself:** `d5dd0cb0…` recorded run `fc42d5db-1021-435f-822c-72adebb8f775` (23 steps, 1 hex)
+    plus 1 hex, 3 quests, 8 achievements. `f0f154ba…`'s scoped queries returned **0 runs and 0 hexes**
+    while that run sat in the same database file. Run-isolation is now shown with a run that actually
+    exists, not merely by absence.
+  - **Preservation:** on sign-out nothing was deleted; `f0f154ba…`'s rows survived unchanged, and
+    `d5dd0cb0…`'s run was still present and intact when it signed back in. Store totals: 42 runs stored =
+    41 legacy + 1 account-owned; **0 legacy rows visible to any account**.
+- **What the E2E did NOT establish, stated plainly.** Active-run state across a mid-run switch was **not
+  exercised** — both accounts showed 0 `active_run` checkpoints, so `abandonRun()` and
+  `shouldClearCheckpointOnStop()` never ran on device. `CoachCache` / `LiveCoachStore` contents are **not
+  observable from outside the process**; the coordinator demonstrably fires on every transition, but "the
+  caches were actually cleared" remains the unit test's claim, not a device observation. UI-level
+  confirmation is the owner's. Observers are supported indirectly (a stale unscoped observer would have
+  emitted the other account's run, and did not).
+- **Tests.** `:app:testLocalDebugUnitTest` **279 passed, 0 failed**; `:app:testRailwayDebugUnitTest`
+  **279 passed, 0 failed** (277 + the 2 new binding tests).
+- **Build.** `:app:assembleRailwayDebug` **BUILD SUCCESSFUL**, `app-railway-debug.apk` 74,146,379 bytes.
+  Installed.
+- **Hygiene.** Temp copies of the real database were deleted after every pull; a leftover copy from the
+  previous session's verifier (`/tmp/fq-verify-*`, `/tmp/fq-workdir.txt`) was found still on disk and
+  removed — note that `rm -rf /tmp/fq-*` silently failed to remove it and the explicit paths worked. A
+  logcat watch was armed for the E2E transitions and expired on its 15-minute limit after capturing all 7.
+- **Open recommendation (NOT actioned).** `FitQuestApp` fails **open** on the coordinator: it catches and
+  logs. That is now the second time a caught-and-logged DI failure has hidden a real defect, and here the
+  thing degraded silently was a privacy control. Making it fail loudly is a product decision with
+  crash-loop implications, so it was left alone and raised instead.
+- **Impact statement:** Database migration: **MIGRATION_5_6 APPLIED to the device** (owner-approved
+  quarantine). Backend migration 0004: **still not applied** — the coaching WebSocket cycles
+  `CONNECTING` → `DISCONNECTED`, consistent with the known `UndefinedColumn` 500. Production data deleted:
+  **NONE** (84 rows preserved and quarantined). Git operations: **NONE**. Secrets printed: **NONE**.
+- **Result Status:** the two-account leak is **fixed, verified by test, and confirmed on device**. M11
+  remains open on: (a) the mid-run account-switch path, untested on device; (b) whether the coordinator's
+  fail-open should become fail-fast; (c) migration 0004, unchanged blocker.

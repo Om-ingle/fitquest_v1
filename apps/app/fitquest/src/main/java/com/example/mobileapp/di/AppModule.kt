@@ -36,6 +36,8 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import okhttp3.Authenticator
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import org.koin.dsl.module
 
@@ -53,9 +55,19 @@ val appModule = module {
             .addMigrations(
                 FitQuestDatabase.MIGRATION_2_3,
                 FitQuestDatabase.MIGRATION_3_4,
-                FitQuestDatabase.MIGRATION_4_5
+                FitQuestDatabase.MIGRATION_4_5,
+                FitQuestDatabase.MIGRATION_5_6
             )
-            .fallbackToDestructiveMigration()
+            // NO fallbackToDestructiveMigration(). It was removed in v6 on
+            // purpose. With it, any migration gap — a version bump without a
+            // Migration, or one whose result does not match the entities — makes
+            // Room silently DROP AND RECREATE every table, i.e. delete the
+            // user's whole local history, and the only evidence is a log line.
+            // Now the same mistake throws IllegalStateException naming the table
+            // and column, and the app fails loudly instead of quietly losing
+            // data. MIGRATION_5_6 deliberately quarantines the rows it cannot
+            // attribute rather than deleting them; a destructive fallback
+            // underneath that would undo the guarantee it exists to provide.
             .build()
     }
     single { get<FitQuestDatabase>().hexDao() }
@@ -65,21 +77,38 @@ val appModule = module {
     single { get<FitQuestDatabase>().achievementDao() }
     single { get<FitQuestDatabase>().activeRunDao() }
 
-    single<HexRepository> { RoomHexRepository(get()) }
+    // ── M11 follow-up: account-scoped local storage ──────────────────────────
+    // Every repository below resolves the signed-in account from this and scopes
+    // its reads and writes to it. Registered under the IdentityProvider
+    // interface because that is the type the repositories declare — the same
+    // declared-type rule that the OkHttp bindings below had to be corrected for.
+    single<com.example.mobileapp.core.auth.IdentityProvider> { get<AuthSession>() }
+
+    // The gate the account-scoped surfaces (CoachCache, LiveCoachStore, the live
+    // run) read before they will acquire anything. Closed by default, and opened
+    // only by AccountScopeCoordinator once its collector is actually running —
+    // so a process in which that coordinator never starts has three EMPTY
+    // surfaces rather than three stale ones. That is the fail-closed direction:
+    // the previous design left the surfaces holding data and relied on a control
+    // to clear them, which is how a coordinator that failed to construct became
+    // a silent privacy hole.
+    single { com.example.mobileapp.core.session.AccountScopeGuard() }
+
+    single<HexRepository> { RoomHexRepository(get(), get()) }
     single<com.example.mobileapp.core.data.local.UserProfileRepository> {
-        com.example.mobileapp.core.data.local.RoomUserProfileRepository(get())
+        com.example.mobileapp.core.data.local.RoomUserProfileRepository(get(), get())
     }
     single<com.example.mobileapp.core.data.local.RunSessionRepository> {
-        com.example.mobileapp.core.data.local.RoomRunSessionRepository(get())
+        com.example.mobileapp.core.data.local.RoomRunSessionRepository(get(), get())
     }
     single<com.example.mobileapp.core.data.local.QuestRepository> {
-        com.example.mobileapp.core.data.local.RoomQuestRepository(get(), get())
+        com.example.mobileapp.core.data.local.RoomQuestRepository(get(), get(), get())
     }
     single<com.example.mobileapp.core.data.local.AchievementRepository> {
-        com.example.mobileapp.core.data.local.RoomAchievementRepository(get(), get())
+        com.example.mobileapp.core.data.local.RoomAchievementRepository(get(), get(), get())
     }
     single<com.example.mobileapp.core.data.local.ActiveRunRepository> {
-        com.example.mobileapp.core.data.local.RoomActiveRunRepository(get())
+        com.example.mobileapp.core.data.local.RoomActiveRunRepository(get(), get())
     }
 
     single<HexIndexer> { UberH3HexIndexer() }
@@ -88,11 +117,35 @@ val appModule = module {
     single { LocationTrackingManager(get()) }
 
     single { HexCaptureEngine(get(), get(), get(), get()) }
+    // The narrow slice ActiveRunController declares. Registered under the
+    // interface because that is the declared parameter type — resolving
+    // `HexCaptureEngine` for it would fail, the same way the OkHttp bindings
+    // below did before they were corrected.
+    single<com.example.mobileapp.core.capture.RunSessionEngine> { get<HexCaptureEngine>() }
 
     // Process-lifetime owner of the active run's identity + wall-clock timing;
-    // starts/stops the foreground tracking service. Context resolves to the
-    // application context registered by androidContext() in FitQuestApp.
-    single { ActiveRunController(get(), get(), get()) }
+    // starts/stops the foreground tracking service. Takes IdentityProvider so it
+    // can record WHICH account started the run — that is what lets it drop the
+    // live run when the account changes without touching the checkpoint the
+    // departing account left behind. The service launcher is a seam so that
+    // decision is testable without a Context.
+    // Registered under the RunServiceLauncher INTERFACE, not the concrete
+    // ForegroundRunServiceLauncher: ActiveRunController declares the interface
+    // as its parameter type, and Koin resolves `get()` against the DECLARED
+    // type. Binding only the concrete class left the graph with no definition
+    // for RunServiceLauncher, so ActiveRunController — and therefore
+    // AccountScopeCoordinator, which depends on it — could not be constructed.
+    // This is the third instance of that mistake in this module (the OkHttp
+    // Interceptor/Authenticator pair, then RunSessionEngine), which is why
+    // DeclaredTypeBindingTest now enforces the rule mechanically instead of
+    // relying on it being remembered at each new seam.
+    single<com.example.mobileapp.core.run.RunServiceLauncher> {
+        com.example.mobileapp.core.run.ForegroundRunServiceLauncher(get())
+    }
+    single { ActiveRunController(get(), get(), get(), get(), get()) }
+    // Registered under the narrow interface the coordinator declares, so the
+    // coordinator cannot reach the controller's other operations.
+    single<com.example.mobileapp.core.run.ActiveRunAccountScope> { get<ActiveRunController>() }
 
     // ── M11 (F-04): authentication ───────────────────────────────────────────
     // One session per process, and exactly one place that can mint, replace or
@@ -106,12 +159,33 @@ val appModule = module {
     }
     single { AuthSession(get(), get()) }
 
+    // M11 follow-up: the one thing that follows the signed-in account for the
+    // caches that outlive a screen. Resolved eagerly in FitQuestApp so its
+    // collector is installed at process start rather than at the first
+    // account change — a subscription installed late is a subscription that
+    // misses the transition it exists for.
+    single {
+        com.example.mobileapp.core.session.AccountScopeCoordinator(
+            get(), get(), get(), get(), get(), AppScope
+        )
+    }
+
     // The two OkHttp collaborators every authenticated client shares. They are
     // singletons so the 401 refresh is single-flight across the whole process:
     // two clients holding two authenticators would each redeem the same
     // rotating refresh token and one of them would lose the session.
-    single { AuthInterceptor { get<AuthSession>().accessToken() } }
-    single {
+    //
+    // Registered under the OkHttp INTERFACE types, not their concrete classes.
+    // Koin resolves `get()` against the declared parameter type, and every
+    // consumer declares the interface — `FitQuestApiClient.create` takes
+    // `Interceptor`/`Authenticator` explicitly. Registering only the concrete
+    // classes left the graph with no definition for `okhttp3.Interceptor`, so
+    // building `FitQuestApi` threw NoBeanDefFoundException on the first
+    // `MainActivity.onStart` and the app died at launch (M11, 2026-09-17).
+    // `AppModuleGraphTest` resolves both clients from this module so that
+    // cannot recur silently.
+    single<Interceptor> { AuthInterceptor { get<AuthSession>().accessToken() } }
+    single<Authenticator> {
         TokenRefreshAuthenticator(refresh = { failed -> get<AuthSession>().refreshBlocking(failed) })
     }
 
@@ -137,14 +211,14 @@ val appModule = module {
     // Fix E: process-lifetime coach cache so Home navigation alone never
     // re-triggers the expensive AI-coach GET/LLM generation. Kept as a
     // singleton (like the fetcher) so its Success survives tab switches.
-    single { com.example.mobileapp.core.network.CoachCache(get(), get()) }
+    single { com.example.mobileapp.core.network.CoachCache(get(), get(), get()) }
 
     // M8.3B: real-time coaching WebSocket. The LIVE push slot is a separate
     // singleton from the pull CoachCache above — a pushed response represents
     // a different trigger/context and must not corrupt the pull cache's
     // synced-run signature bookkeeping. Connect/disconnect is driven from
     // MainActivity.onStart/onStop (one logical connection per process).
-    single { LiveCoachStore() }
+    single { LiveCoachStore(get()) }
     single {
         // WebSockets are long-lived: the default HTTP read timeout would kill
         // an idle connection, so it is disabled and OkHttp pings to keep the
@@ -161,8 +235,8 @@ val appModule = module {
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .writeTimeout(0, TimeUnit.MILLISECONDS)
             .pingInterval(30, TimeUnit.SECONDS)
-            .addInterceptor(get<AuthInterceptor>())
-            .authenticator(get<TokenRefreshAuthenticator>())
+            .addInterceptor(get<Interceptor>())
+            .authenticator(get<Authenticator>())
             .build()
         val store = get<LiveCoachStore>()
         CoachingWsClient(

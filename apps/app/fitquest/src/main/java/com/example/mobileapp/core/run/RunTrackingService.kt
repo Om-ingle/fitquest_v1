@@ -205,12 +205,21 @@ class RunTrackingService : Service() {
      * never re-post the notification after we remove it; the explicit cancel is
      * the belt-and-braces for that same window (a notify() racing
      * [ServiceCompat.stopForeground] leaves the ongoing notification behind).
+     *
+     * Whether the checkpoint row is deleted is the controller's call, not this
+     * method's: an account switch discards the live run but must leave the row
+     * behind for the account that started it
+     * ([ActiveRunController.shouldClearCheckpointOnStop]). Both teardown routes
+     * — the explicit stop and the worker noticing the run disappeared — converge
+     * here, so asking once, here, covers both.
      */
     private fun runTeardown(monitor: Job?) {
         shutdownScope.launch {
             monitor?.join()
-            monitorMutex.withLock {
-                activeRunRepository.clearActiveRun()
+            if (controller.shouldClearCheckpointOnStop()) {
+                monitorMutex.withLock {
+                    activeRunRepository.clearActiveRun()
+                }
             }
             ServiceCompat.stopForeground(
                 this@RunTrackingService,

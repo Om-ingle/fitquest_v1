@@ -1,8 +1,10 @@
 package com.example.mobileapp.core.auth
 
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -29,12 +31,21 @@ import kotlinx.coroutines.withTimeoutOrNull
  * cleared on precisely one event: Supabase explicitly rejecting the refresh
  * token ([SupabaseAuthClient.Outcome.InvalidCredentials]), which is the one
  * signal that says "this session is over".
+ *
+ * ### Identity, not just credentials
+ *
+ * The session is also the app's [IdentityProvider]. `AuthState.SignedIn.userId`
+ * — Supabase's `auth.users.id`, the token's `sub` — is the subject every
+ * user-scoped local row is filed under, so the same account is recognised on
+ * the device and by the backend. [state] is therefore not only "is there a
+ * session"; it is the value other layers scope their storage by, and a change
+ * to it is what tells them to stop serving the previous account's data.
  */
 class AuthSession(
     private val client: SupabaseAuthClient,
     private val store: TokenStore,
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
-) {
+) : IdentityProvider {
 
     /**
      * Guards every mutation of [tokens] and the store, and serialises refreshes.
@@ -57,6 +68,26 @@ class AuthSession(
 
     /** The bearer value for the next request, or null when signed out. */
     fun accessToken(): String? = tokens?.accessToken
+
+    /**
+     * The signed-in account's subject — see [IdentityProvider].
+     *
+     * Read from [state] rather than from [tokens] so that the answer and the
+     * value the UI is reacting to can never disagree: both are set together
+     * inside [adopt]/[signOut] under [lock]. It is available synchronously from
+     * construction, because the session is built from whatever the token store
+     * holds, so a component asking during process start gets the right account
+     * without waiting for [restore].
+     */
+    override fun currentSubject(): String? = (state.value as? AuthState.SignedIn)?.userId
+
+    /**
+     * [currentSubject] as a flow. Cold: every collector receives the current
+     * value on subscription (from the backing [StateFlow]) and then each change,
+     * which is what lets a Room observer re-scope itself mid-collection.
+     */
+    override val subject: Flow<String?> =
+        state.map { (it as? AuthState.SignedIn)?.userId }
 
     /**
      * Sign in with the user's own credentials. A failure leaves the current

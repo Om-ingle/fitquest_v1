@@ -24,6 +24,11 @@ Three fixtures carry it:
 Auth is never disabled. The only thing patched is the JWKS *fetch*, so no test
 talks to the network; signature verification, claim checks and identity
 resolution all run for real.
+
+AI provider credentials are another matter: they are *emptied* below rather
+than patched, so the suite cannot borrow a developer's real key from .env. See
+the note at the neutralisation block for why that is the difference between a
+hermetic suite and one that merely happens to be run on a hermetic machine.
 """
 import os
 
@@ -40,6 +45,43 @@ os.environ["ENVIRONMENT"] = "test"
 # M11 — the admin allow-list is empty by default, so the privileged routes are
 # closed unless a test opens them deliberately (see the `admin` fixture).
 os.environ["ADMIN_USER_IDS"] = ""
+
+# AI providers — forced to empty, not setdefault'd, so hermeticity is a
+# property of the SUITE and not merely of the machine it runs on.
+#
+# Settings loads `env_file=(".env", "../../.env")`, so a developer's own
+# apps/api/.env silently configures a real provider for the whole suite.
+# Environment variables outrank the dotenv file in pydantic-settings, so
+# writing these here (before `app.core.config` is imported) empties the
+# credential the .env would have supplied. `get_embedding_provider` and
+# `get_llm_provider` test their key for truthiness, so an empty string is
+# "not configured" and the route answers 503 rather than calling out.
+#
+# This is what makes the previous failure mode impossible instead of merely
+# absent: the coach test that once passed locally by making a real, billable
+# LLM call was passing *because* of a developer's key, and would have kept
+# doing so — invisibly — until it ran on a runner without one. With the
+# credentials removed here that test cannot borrow a key from anywhere, so it
+# fails on the developer's machine too, which is where a failure is cheap.
+# No test needs a real provider: the ones that exercise those routes install
+# deterministic fakes (see tests/test_coach_api.py::_patch_providers).
+#
+# SUPABASE_SECRET_KEY is included because it is a secret no test uses; leaving
+# it visible would let a future test reach production Supabase by accident.
+for _var in (
+    "GEMINI_API_KEY",
+    "AGENTIC_API_KEY",
+    "AGENT_ROUTER_API_KEY",
+    "SUPABASE_SECRET_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+):
+    os.environ[_var] = ""
+
+# Pinned so the provider branch is deterministic: with AGENTIC_API_KEY empty
+# the agentrouter branch would raise either way, but LLM_PROVIDER=gemini makes
+# it the Gemini branch's "not configured" that is exercised, which is the one
+# a developer without credentials sees.
+os.environ["LLM_PROVIDER"] = "gemini"
 
 # M8.3A — disable the real-time AI push stage for every test by default. The
 # module singleton reads this at import; M8.3A tests re-enable it with fake

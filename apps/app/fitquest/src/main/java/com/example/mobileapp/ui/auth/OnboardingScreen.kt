@@ -176,8 +176,14 @@ class OnboardingScreen : Screen {
                                 onSelectGoal = { selectedGoal = it },
                                 onFinish = {
                                     coroutineScope.launch {
+                                        // No id: the profile's key is the account,
+                                        // and `saveProfile` stamps the signed-in
+                                        // subject. Onboarding therefore writes into
+                                        // the row belonging to the account that is
+                                        // completing it, which is also why this
+                                        // screen can never be skipped on the
+                                        // strength of another account's answer.
                                         val profile = UserProfileEntity(
-                                            id = "local_user",
                                             username = codename.trim().ifEmpty { "PathFinder" },
                                             avatarName = avatarOptions[selectedAvatarIndex].first,
                                             dailyStepGoal = selectedGoal,

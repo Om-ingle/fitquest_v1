@@ -1,0 +1,73 @@
+warning: in the working copy of '.github/workflows/ci.yml', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'FitQuest_PHASE2_SRS.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/api/tests/conftest.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/api/tests/test_config.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/MainActivity.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/auth/AuthSession.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/AchievementDao.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/AchievementEntity.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/AchievementRepository.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/ActiveRunDao.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/ActiveRunEntity.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/ActiveRunRepository.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/CapturedHexEntity.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/DailyQuestDao.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/DailyQuestEntity.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/FitQuestDatabase.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/HexDao.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/HexRepository.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/QuestRepository.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/RunSessionDao.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/RunSessionEntity.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/RunSessionRepository.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/UserDao.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/UserProfileEntity.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/data/local/UserProfileRepository.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/network/CoachCache.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/network/LiveCoachStore.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/run/ActiveRunController.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/main/java/com/example/mobileapp/core/run/RunTrackingService.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/test/java/com/example/mobileapp/core/network/CoachCacheTest.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/test/java/com/example/mobileapp/core/network/CoachFreshnessPullFallbackTest.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/test/java/com/example/mobileapp/core/network/LiveCoachStoreTest.kt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/app/fitquest/src/test/java/com/example/mobileapp/core/tts/CoachingSpeechControllerTest.kt', LF will be replaced by CRLF the next time Git touches it
+ .github/workflows/ci.yml                           |  32 [32m+[m[31m-[m
+ FitQuest_PHASE2_SRS.md                             | 276 [32m++++++++++++[m[31m-[m
+ apps/api/tests/conftest.py                         |  42 [32m++[m
+ apps/api/tests/test_config.py                      |  38 [32m++[m
+ apps/app/fitquest/build.gradle.kts                 |  12 [32m+[m
+ .../main/java/com/example/mobileapp/FitQuestApp.kt |  31 [32m++[m
+ .../java/com/example/mobileapp/MainActivity.kt     |  11 [32m+[m
+ .../com/example/mobileapp/core/auth/AuthSession.kt |  33 [32m+[m[31m-[m
+ .../mobileapp/core/capture/HexCaptureEngine.kt     |  55 [32m++[m[31m-[m
+ .../mobileapp/core/data/local/AchievementDao.kt    |  32 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/AchievementEntity.kt |  17 [32m+[m[31m-[m
+ .../core/data/local/AchievementRepository.kt       |  44 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/ActiveRunDao.kt      |  22 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/ActiveRunEntity.kt   |  14 [32m+[m[31m-[m
+ .../core/data/local/ActiveRunRepository.kt         |  36 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/CapturedHexEntity.kt |  17 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/DailyQuestDao.kt     |  23 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/DailyQuestEntity.kt  |  16 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/FitQuestDatabase.kt  | 175 [32m+++++++[m[31m-[m
+ .../example/mobileapp/core/data/local/HexDao.kt    |  26 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/HexRepository.kt     |  32 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/QuestRepository.kt   |  38 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/RunSessionDao.kt     |  63 [32m++[m[31m-[m
+ .../mobileapp/core/data/local/RunSessionEntity.kt  |  13 [32m+[m
+ .../core/data/local/RunSessionRepository.kt        |  66 [32m++[m[31m-[m
+ .../example/mobileapp/core/data/local/UserDao.kt   |  31 [32m+[m[31m-[m
+ .../mobileapp/core/data/local/UserProfileEntity.kt |  15 [32m+[m[31m-[m
+ .../core/data/local/UserProfileRepository.kt       |  72 [32m+++[m[31m-[m
+ .../example/mobileapp/core/network/CoachCache.kt   |  58 [32m++[m[31m-[m
+ .../mobileapp/core/network/LiveCoachStore.kt       |  18 [32m+[m[31m-[m
+ .../mobileapp/core/run/ActiveRunController.kt      | 208 [32m++++++++[m[31m--[m
+ .../mobileapp/core/run/RunTrackingService.kt       |  13 [32m+[m[31m-[m
+ .../java/com/example/mobileapp/di/AppModule.kt     | 108 [32m++++[m[31m-[m
+ .../example/mobileapp/ui/auth/OnboardingScreen.kt  |   8 [32m+[m[31m-[m
+ .../mobileapp/core/network/CoachCacheTest.kt       |  24 [32m+[m[31m-[m
+ .../core/network/CoachFreshnessPullFallbackTest.kt |  17 [32m+[m[31m-[m
+ .../mobileapp/core/network/LiveCoachStoreTest.kt   |  21 [32m+[m[31m-[m
+ .../core/tts/CoachingSpeechControllerTest.kt       |   9 [32m+[m[31m-[m
+ docs/agent_ledger.md                               | 447 [32m+++++++++++++++++++++[m
+ 39 files changed, 2001 insertions(+), 212 deletions(-)

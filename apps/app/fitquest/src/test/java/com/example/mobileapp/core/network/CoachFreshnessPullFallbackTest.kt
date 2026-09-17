@@ -6,6 +6,7 @@ import com.example.mobileapp.core.network.models.CoachResponse
 import com.example.mobileapp.core.network.models.CoachRetrievalInfo
 import com.example.mobileapp.core.network.models.FitnessContextResponse
 import com.example.mobileapp.core.network.models.Recommendation
+import com.example.mobileapp.core.session.AccountScopeGuard
 import com.example.mobileapp.core.tts.CoachingSpeechController
 import com.example.mobileapp.core.tts.CoachingSpeechGate
 import com.example.mobileapp.core.tts.TtsSynthesizer
@@ -133,6 +134,14 @@ class CoachFreshnessPullFallbackTest {
 
     // ── D: signature advances, stale live exists, fresh pull is what shows ───
 
+    /**
+     * An armed account-scope guard: the pull cache refuses to fetch and the live
+     * store refuses to publish while the guard is closed. That fail-closed
+     * behaviour has its own tests in `AccountScopeFailClosedTest`; everything
+     * here is about freshness ordering between a pull and a push.
+     */
+    private fun armedGuard() = AccountScopeGuard().apply { setActive(true) }
+
     @Test
     fun `D a newly credited run advances the signature and the fresh pull outranks the stale live`() = runBlocking {
         val repo = FakeRunSessionRepository(listOf(session("run-a")))
@@ -143,7 +152,7 @@ class CoachFreshnessPullFallbackTest {
             coachResponse("pull for run A", "fix-e-v1:ctx:runA", "2026-09-06T09:30:00.000000"),
             coachResponse("pull for run B", "fix-e-v1:ctx:runB", "2026-09-06T11:00:00.000000"),
         ))
-        val cache = CoachCache(CoachFetcher(api), repo)
+        val cache = CoachCache(CoachFetcher(api), repo, armedGuard())
 
         cache.ensureLoaded()
         assertEquals(1, api.getCoachCalls)
@@ -151,7 +160,7 @@ class CoachFreshnessPullFallbackTest {
             (cache.state.value as CoachFetcher.Outcome.Success).response.message)
 
         // A process-lifetime live push for run A still lingers in the store.
-        val liveStore = LiveCoachStore()
+        val liveStore = LiveCoachStore(armedGuard())
         liveStore.publish(
             coachResponse("stale live for run A", "fix-e-v1:ctx:runA", "2026-09-06T09:00:00.000000")
         )
@@ -178,7 +187,7 @@ class CoachFreshnessPullFallbackTest {
 
     @Test
     fun `D the pull fallback never auto-reads aloud`() {
-        val liveStore = LiveCoachStore()
+        val liveStore = LiveCoachStore(armedGuard())
         val synth = FakeSynthesizer()
         val controller = CoachingSpeechController(
             liveCoachStore = liveStore,
@@ -198,7 +207,7 @@ class CoachFreshnessPullFallbackTest {
         val api = FakeApi(listOf(
             coachResponse("pull for run B", "fix-e-v1:ctx:runB", "2026-09-06T11:00:00.000000"),
         ))
-        val cache = CoachCache(CoachFetcher(api), repo)
+        val cache = CoachCache(CoachFetcher(api), repo, armedGuard())
         runBlocking { cache.ensureLoaded() }
         assertEquals("pull for run B",
             (cache.state.value as CoachFetcher.Outcome.Success).response.message)

@@ -106,18 +106,39 @@ data class HexCaptureSnapshot(
     }
 }
 
+/**
+ * The slice of the capture engine that the active-run lifecycle depends on.
+ *
+ * [ActiveRunController] needs exactly two things from the engine: the live
+ * tallies it checkpoints, and the ability to release a session it can no longer
+ * attribute. Declaring only those two makes the controller's account-switch
+ * decision testable in a JVM test — the real [HexCaptureEngine] cannot be
+ * constructed there, since it takes a `Context`-bound sensor stack and a native
+ * h3 indexer. Same declared-type discipline as the rest of the DI graph.
+ */
+interface RunSessionEngine {
+    /** The live capture state; [ActiveRunController] reads its tallies. */
+    val state: StateFlow<HexCaptureSnapshot>
+
+    /**
+     * Releases the live session without persisting its hex tallies. See
+     * [HexCaptureEngine.discardSession].
+     */
+    fun discardSession()
+}
+
 class HexCaptureEngine(
     private val stepSensorManager: StepSensorManager,
     private val locationTrackingManager: LocationTrackingManager,
     private val hexRepository: HexRepository,
     private val hexIndexer: HexIndexer,
-) {
+) : RunSessionEngine {
     private val h3Resolution = 10
     private val nearbyRingSize = 2
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _state = MutableStateFlow(HexCaptureSnapshot())
-    val state: StateFlow<HexCaptureSnapshot> = _state.asStateFlow()
+    override val state: StateFlow<HexCaptureSnapshot> = _state.asStateFlow()
 
     private var locationJob: Job? = null
     private var stepsJob: Job? = null
@@ -277,16 +298,38 @@ class HexCaptureEngine(
      * the live counters.
      */
     fun stopTracking() {
+        endSession(persistHexTallies = true)
+    }
+
+    /**
+     * Ends the run WITHOUT persisting its hex tallies.
+     *
+     * For the case where the account changes mid-run. The tallies in
+     * [HexCaptureSnapshot.hexesToSteps] were earned by the account that started
+     * the run, and by the time this is called that account's session is gone, so
+     * [HexRepository] has no subject to attribute them to — merging them would
+     * either be dropped or land on whoever signs in next. The run's persisted
+     * checkpoint is deliberately NOT touched: it stays owned by the account that
+     * started it, so that account recovers the run on its next sign-in. Only the
+     * live, in-process state (sensors, counters) is released here.
+     */
+    override fun discardSession() {
+        endSession(persistHexTallies = false)
+    }
+
+    private fun endSession(persistHexTallies: Boolean) {
         if (!_state.value.isTracking) return
 
         stepsJob?.cancel()
         stepsJob = null
         stopLocationMonitoring()
 
-        val finishedSession = _state.value.hexesToSteps
-        scope.launch {
-            if (finishedSession.isNotEmpty()) {
-                hexRepository.mergeSessionHexes(finishedSession)
+        if (persistHexTallies) {
+            val finishedSession = _state.value.hexesToSteps
+            scope.launch {
+                if (finishedSession.isNotEmpty()) {
+                    hexRepository.mergeSessionHexes(finishedSession)
+                }
             }
         }
 

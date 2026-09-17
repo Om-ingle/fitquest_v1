@@ -6,14 +6,32 @@
 # deployment and migration are the project owner's manual steps.
 #
 # WHAT IT NEEDS: nothing. There are no repository secrets to configure and none
-# are referenced below. Both suites are hermetic by construction:
+# are referenced below. Both suites are network-free, and the runner is what
+# proves it: it has no .env and no provider credentials, so a test that reaches
+# for a real service fails here instead of quietly borrowing a developer's key.
 #
-#   * The API tests run against a throwaway local SQLite file and a JWKS
-#     document installed by a fixture. Authentication is REAL in them (real
-#     ES256 signatures, real claim checks, real identity resolution) — the only
-#     thing patched is the JWKS *fetch*, so no test calls Supabase or any other
-#     network service. tests/conftest.py forces ENVIRONMENT=test and a dummy
-#     SUPABASE_URL itself; the workflow must not supply real ones.
+#   * The API tests run against a throwaway local SQLite file. Authentication is
+#     REAL in them (real ES256 signatures, real claim checks, real identity
+#     resolution). Patched are only the two boundaries that would otherwise
+#     leave the machine: the JWKS *fetch* (a JWKS document is installed by a
+#     fixture) and the AI provider factories — the tests that exercise
+#     coach/embedding routes replace them with deterministic fakes. Nothing in
+#     the suite calls Supabase, Gemini, AgentRouter or any other service.
+#     tests/conftest.py forces ENVIRONMENT=test and a dummy SUPABASE_URL itself,
+#     and empties the provider credential variables, so the workflow must not
+#     supply real ones and could not leak a developer's if it did.
+#
+#     History worth keeping. Run #1 (f7f27b9, 2026-09-17) was this job's only red
+#     run, and exactly one test caused it: it had not replaced its provider
+#     factory, so it asserted on a response only a real LLM key can produce. It
+#     therefore passed on a developer machine — by making a real, billable API
+#     call — and failed on the runner. Fixed in 79d9481, and the credential
+#     neutralisation in conftest.py now removes the ambient key that made the
+#     difference invisible, so the same mistake fails locally too. The lesson is
+#     the reason this comment is specific rather than reassuring: a green local
+#     run is NOT evidence this job will be green unless the suite is hermetic by
+#     construction, which is now what it is rather than merely what the runner
+#     happened to provide.
 #   * The Android tests drive MockWebServer on the loopback interface. No test
 #     reaches the deployed backend. The build's SUPABASE_URL / SUPABASE_ANON_KEY
 #     are left unset, which is a supported configuration: the app compiles and

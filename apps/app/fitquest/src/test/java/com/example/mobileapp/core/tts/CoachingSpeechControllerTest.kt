@@ -2,6 +2,7 @@ package com.example.mobileapp.core.tts
 
 import com.example.mobileapp.core.network.LiveCoachStore
 import com.example.mobileapp.core.network.models.CoachResponse
+import com.example.mobileapp.core.session.AccountScopeGuard
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
@@ -76,7 +77,11 @@ class CoachingSpeechControllerTest {
     )
 
     private fun harness(ready: Boolean = true): Harness {
-        val store = LiveCoachStore()
+        // Armed: the store drops every push while the account-scope guard is
+        // closed, so a closed guard would leave the controller with nothing to
+        // speak and these tests asserting silence for the wrong reason. The
+        // refusal itself is covered by AccountScopeFailClosedTest.
+        val store = LiveCoachStore(AccountScopeGuard().apply { setActive(true) })
         val fake = FakeSynthesizer().apply { isReady = ready }
         val controller = CoachingSpeechController(
             liveCoachStore = store,
@@ -142,7 +147,7 @@ class CoachingSpeechControllerTest {
 
     @Test
     fun `a message retained before start is never re-read aloud`() {
-        val store = LiveCoachStore()
+        val store = LiveCoachStore(AccountScopeGuard().apply { setActive(true) })
         val fake = FakeSynthesizer().apply { isReady = true }
         store.publish(response(message = "stale from a previous foreground"))
         val controller = CoachingSpeechController(

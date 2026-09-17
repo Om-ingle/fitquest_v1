@@ -152,6 +152,17 @@ class MainActivity : ComponentActivity() {
      * checkpoint from a process death) is surfaced directly on the run screen so
      * it is recovered instead of silently lost. Completed runs keep their normal
      * Room -> RunSyncer path through MainHubScreen.
+     *
+     * ### Onboarding is per account, and this is the line that decides it
+     *
+     * Every read below is scoped to the signed-in subject — `getProfile()` reads
+     * the profile KEYED BY that account and creates a fresh default when the
+     * account has never signed in here, and `getActiveRun()` looks for a
+     * checkpoint owned by that account. So a device that has already been
+     * through onboarding cannot hand that answer to the next account: no row
+     * exists for it, `isOnboardingCompleted` is false, and it goes to
+     * OnboardingScreen. The same applies to the run: the previous account's
+     * checkpoint is still in the database and is simply not this account's.
      */
     private suspend fun resolveStartScreen(initialAction: String?): Screen {
         if (!authSession.restore()) return LoginScreen()

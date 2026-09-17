@@ -4,8 +4,21 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import java.util.UUID
 
+/**
+ * A completed run.
+ *
+ * [ownerSubject] is the Supabase Auth user id of the account that ran it, and
+ * is stamped by [RoomRunSessionRepository] on every write — callers construct
+ * this without naming an owner, and the default is never persisted.
+ *
+ * The primary key stays the run's own UUID rather than becoming composite:
+ * unlike hexes, quests and achievements, a run id is generated per run and
+ * cannot collide between accounts, and the run id is what the backend dedupes
+ * on (`run_id`) — so it must remain globally unique and unchanged.
+ */
 @Entity(tableName = "run_sessions")
 data class RunSessionEntity(
+    val ownerSubject: String = LEGACY_UNOWNED_SUBJECT,
     @PrimaryKey val id: String = UUID.randomUUID().toString(),
     val startedAt: Long,
     val endedAt: Long,
