@@ -600,3 +600,158 @@
   (no backend files changed; M9.3 baseline 391 passed stands).
 - **Result Status:** M9.4 DONE. Final presentation path is clean. No Git
   operations; no secrets printed.
+
+## [2026-09-12 11:20] - Task: M10 — Telemetry & Run Integrity (F-01, F-02, F-10 leak)
+
+- **Scope Discipline:** Exactly three defect targets, as approved: F-01 (daily
+  telemetry correctness), F-02 (pause/resume integrity), F-10 (location-monitoring
+  leak ONLY — adaptive sampling and coarser-while-paused remain deferred to M15).
+  NO migration, NO new endpoint, NO API contract change, NO backend business-logic
+  change, NO auth, NO Redis/Kafka, NO anti-cheat, NO ambient step tracking.
+  `RunTiming` was NOT rewritten. The M9.2 `pendingStepsBeforeHex` invariant was
+  preserved exactly and is now covered by pause-cycle tests.
+- **Stage 1 (read-only audit) before any edit:** traced
+  `StepSensorManager.observeStepDeltas` → `HexCaptureEngine.startStepsCollection`
+  → `HexCaptureSnapshot.applyStepDelta` → `CaptureScreenModel` reduce →
+  `finishActiveRun` → `RunSessionEntity` → `DailyActivitySnapshotBuilder.build`
+  → `RunSyncPayload.daily_activity` → `upsert_daily_activity`; enumerated every
+  call site of `observeRecentSessions` (one real caller: `HomeTab.kt:153`, the
+  rest test fakes), `getSessionsBetween` (one real caller:
+  `CaptureScreenModel.kt:328`), `applyStepDelta`, `applyLocationUpdate`,
+  `startLocationMonitoring`, `stopTracking`.
+- **Modifications Matrix (Android only — zero files under `apps/api/`):**
+  - `core/capture/HexCaptureEngine.kt` — `HexCaptureSnapshot` gains `isPaused`;
+    `applyStepDelta` and `applyLocationUpdate` gated on it (paused deltas are
+    DISCARDED, never banked, so resuming has no catch-up jump); new public
+    `stopLocationMonitoring()` + `startLocationMonitoring()` made public; new
+    `setPaused(Boolean)`; `startTracking`/`resumeTracking`/`stopTracking` seed or
+    clear the flag; `stopTracking` now releases the location subscription (F-10).
+  - `features/capture/CaptureScreenModel.kt` — mirrors `snapshot.isPaused` into
+    `CaptureState` so the engine is the single source of truth; `onTogglePause`
+    now drives controller AND engine; `onResumeRecovery` passes
+    `checkpoint.isPaused` into `resumeTracking`; re-arms location monitoring on
+    screen entry and releases it in `onDispose` when no run is live (a live run
+    keeps its subscription — it belongs to the run, not the screen).
+  - `ui/capture/CurrentRunScreen.kt` — HUD status now reads PAUSED / ACTIVE RUN /
+    STANDBY.
+  - `core/run/RunTrackingService.kt` — FGS notification title/text reflect the
+    checkpoint's `isPaused` (no new plumbing; the field was already persisted).
+  - `core/telemetry/DailyActivitySnapshotBuilder.kt` — new
+    `daySteps(sessions, forTimestampMillis)`; `build()` calls it instead of
+    repeating the sum, so Home and the sync snapshot share one definition.
+  - `ui/home/HomeTab.kt` — today's steps read from `observeAllSessions()` (the
+    previous `observeRecentSessions(limit = 3)` + filter silently dropped the
+    first run of any 4+-run day) and totalled via `daySteps`; card labelled
+    "Steps recorded during today's runs" (the app has no ambient step source).
+  - Deliberately NOT changed: `RunTiming.kt`, `ActiveRunEntity`,
+    `RunSessionDao`/`RunSessionRepository` (a new interface method would break
+    four `RunSessionRepository` test fakes; `observeAllSessions()` already
+    existed on all of them), and the `RunSyncPayload` shape (no `paused_seconds`
+    field was added — not required by the fix).
+- **Tests/Build:** `:app:testLocalDebugUnitTest` → BUILD SUCCESSFUL in 1m 12s.
+  **161 tests in 22 classes, 0 failures** (was 153). New:
+  `HexCaptureSnapshotAccountingTest` +5 (11→16): paused deltas discarded and not
+  buffered; paused fixes move the display without capturing territory; the
+  pre-hex buffer survives a pause and drains exactly once on resume; resume
+  continues from paused totals; the invariant holds across repeated pause/resume
+  cycles. `DailyActivitySnapshotBuilderTest` +3 (6→9): four runs in one day all
+  count (the regressed `LIMIT 3` read is asserted as a contrast case); a run
+  belongs to the day it started, not the day it ended; other days in an
+  over-fetched list are excluded.
+- **Impact statement:** Database migration: NONE. API contract change: NONE.
+  Backend behavior change: NONE.
+- **Result Status:** CODE COMPLETE. Exit criteria 1, 2, 4, 6, 8 MET with test
+  evidence; 3 (engine half), 5 and 7 are OPEN — no device was attached
+  (`adb devices` empty), and `HexCaptureEngine`'s collaborators are
+  Android-backed so the engine-side pause recovery and the location release are
+  not JVM-unit-testable in this codebase. Device procedure (scenarios A–D)
+  recorded in `FitQuest_PHASE2_SRS.md` §7.5. Documentation updated: §1, §2, §5
+  (F-01/F-02/F-10), §6, §7.5 (new), §13 (D-025/D-026/D-027), §14, §17. No Git
+  operations performed; no secrets printed.
+
+---
+
+## [2026-09-12 12:45] - Task: M10 real-device verification (scenarios A–D)
+
+- **Scope:** Execute the §7.5 device procedure for M10 on a physical device to
+  close exit criteria 3 (engine half), 5 and 7. No scope expansion.
+- **Device:** Samsung SM-M325F (Galaxy M32), Android 13, serial `RZ8R90661CF`,
+  `railwayDebug` build against the Railway production backend.
+- **Files changed this pass:**
+  - `core/capture/HexCaptureEngine.kt` — **removed the construction-time
+    `init { startLocationMonitoring() }`**. This is a second, independent F-10
+    leak, found only on device; see below. No other production changes.
+  - `FitQuest_PHASE2_SRS.md` — §6 M10 status, §7 header, §7.4 exit-criteria
+    table, new §7.6 device record, §13 D-028, §14, §17.
+  - `docs/agent_ledger.md` — this entry.
+- **Second F-10 leak (the significant finding).** The first fix released the
+  location subscription when the capture screen was disposed with no live run —
+  necessary but not sufficient. `HexCaptureEngine` is a Koin `single` injected by
+  `MainActivity` (line 40) purely to read `state.value.isTracking` for cold-start
+  routing, and its `init` armed high-accuracy GPS unconditionally. So *merely
+  launching the app* started continuous location collection on any screen, and
+  nothing released it on the Home path; only visiting and leaving the capture
+  screen happened to stop it. Measured with `dumpsys location` (the per-provider
+  `service:` line under **Location Providers**):
+  - force-stopped → `gps provider: service: ProviderRequest[OFF]`
+  - freshly launched, sitting on Home, **before** → `ProviderRequest[@+2s0ms, HIGH_ACCURACY, WorkSource{10354 com.example.mobileapp}]`
+  - freshly launched, sitting on Home, **after** → `ProviderRequest[OFF]`
+  - capture screen visible in standby → `[@+2s0ms, HIGH_ACCURACY, …]` (unchanged — by design)
+  - capture screen closed, no run → `ProviderRequest[OFF]`
+  Fix: arming is demand-driven — the capture screen arms while visible,
+  `startTracking()` re-arms for a run. `MainActivity`'s routing read needs only
+  the boolean and `HomeTab` never reads engine location state, so both are
+  unaffected.
+  - **Evidence trap worth recording:** the `SEC Dump for updateRequirements`
+    block inside `dumpsys location` is Samsung's *historical* log and still lists
+    FitQuest requests from 2026-09-06. Grepping the whole dump for `ProviderRequest`
+    reads that block and gives false positives in both directions. Only the
+    per-provider `service:` line describes the live state.
+- **Scenario A (pause freezes accrual):** HUD `ACTIVE RUN` → `PAUSED`; FGS
+  notification title exactly `⏸ FitQuest Run Paused` (id 1001, channel
+  `fitquest_run_active`). Over ~60 s paused, elapsed held at `01:52` and
+  Steps/Distance/Calories/Hexes stayed flat while `Step Counter (handle=0x13)`
+  still reported `connections=2`.
+- **Scenario B (finish pairing):** summary after Stop & Finish — `Duration
+  02:31`, `Total Steps 48`, `2 Hexagons Conquered`, `+120 XP`. The ~4 minutes of
+  paused wall-clock are absent from the duration (a running clock would read
+  ~06:31) and the step figure equals the value frozen at pause, so both exclude
+  the same interval.
+- **Scenario C (process death):** `am force-stop` while paused, then relaunch →
+  recovery dialog `🏃 Previous Run Found`, `Steps: 48`, `Distance: 0.04 km`,
+  `Elapsed: 01:52` (frozen, not wall-clock), `Status: Paused`. Tap **Resume Run**
+  → HUD `PAUSED`, elapsed still `01:52`, and `dumpsys location` then shows the
+  run holding the subscription. No post-resume jump: 01:52 → 01:57 → 02:18.
+- **Scenario D (location released):** both the leave-the-screen path and Stop &
+  Finish end at `gps provider: service: ProviderRequest[OFF]`.
+- **Criterion 1 end-to-end (≥4 runs):** four runs in one device-local day with
+  differing step counts (48 / 75 / 17 / 25). Home rendered `165 / 8000 steps`
+  under `Steps recorded during today's runs`; the backend
+  `userdailyactivity` row for 2026-09-12 held `steps=165, active_minutes=6,
+  goal_steps=8000, hexes_captured=7`; the `runsession` ledger carried all four
+  run ids matching Room one-for-one. The replaced capped read
+  (`observeRecentSessions(limit = 3)` then filter to today) would have produced
+  117 — so the run discriminates the fix rather than merely agreeing with it.
+  The coach card independently corroborated the server value, quoting
+  "48 steps and 3 active minutes toward an 8,000-step goal" after the first sync.
+- **Sync-path note (not an M10 defect):** the first Stop & Finish reported
+  `Saved offline — provisional XP (no auto-retry)`. Cause was environmental: the
+  phone's Wi-Fi was associated but passing no traffic (`UnknownHostException` on
+  Android's own connectivity probe; gateway unreachable) while the host PC on the
+  same router resolved `fitquest-api-production.up.railway.app` normally. After
+  bouncing the phone's Wi-Fi, `RunReconciler` replayed the unsynced row on the
+  next **cold start** — foregrounding an already-visible activity does not fire
+  `MainActivity.onStart`, so the reconcile legitimately did not run then. The
+  backend re-scored that run's XP from 120 to 100 on sync, which is the intended
+  server-authoritative behavior.
+- **Tests/Build:** `:app:testRailwayDebugUnitTest` → **161 tests in 22 classes,
+  0 failures, 0 errors** (rebuilt and reinstalled with the engine change).
+- **Impact statement:** Database migration: NONE. API contract change: NONE.
+  Backend behavior change: NONE. Nothing under `apps/api/` touched.
+- **Result Status:** COMPLETE. All eight §7.4 exit criteria MET. Residual gap,
+  recorded rather than papered over: criterion 2's step-discard path was
+  confirmed on device only by counters holding while the sensor stayed
+  connected — no genuine step events occurred during a pause window, so
+  `applyStepDelta`'s paused branch remains unit-test-verified only.
+  Documentation updated: §6, §7, §7.4, §7.6 (new), §13 (D-028), §14, §17. No Git
+  operations performed; no secrets printed.

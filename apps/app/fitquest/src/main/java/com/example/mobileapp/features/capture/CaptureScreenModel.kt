@@ -74,6 +74,12 @@ class CaptureScreenModel(
     override val container = screenModelScope.container<CaptureState, Nothing>(CaptureState())
 
     init {
+        // F-10: re-arm the location subscription on screen entry. The engine
+        // releases it when a run ends and when this screen is disposed with no
+        // run live, so entering the screen is what restores the standby map's
+        // live fix. Idempotent, and harmless while a run is already live.
+        hexCaptureEngine.startLocationMonitoring()
+
         // --- Engine snapshot → UI state (runs on Default dispatcher already via engine) ---
         hexCaptureEngine.state
             .onEach { snapshot ->
@@ -103,6 +109,10 @@ class CaptureScreenModel(
 
                         state.copy(
                             isTracking = snapshot.isTracking,
+                            // Mirrored from the engine, which owns the paused
+                            // flag — the UI can never show a pause the engine
+                            // is not applying (F-02).
+                            isPaused = snapshot.isPaused,
                             currentLocation = snapshot.currentLocation,
                             currentHexId = snapshot.currentHexId,
                             sessionSteps = snapshot.sessionSteps,
@@ -180,13 +190,23 @@ class CaptureScreenModel(
         }
     }
 
+    /**
+     * Pauses or resumes the live run. The pause is applied to BOTH authorities
+     * in one step: the controller (which freezes elapsed time via its
+     * timestamp-derived [RunTiming]) and the capture engine (which stops
+     * accruing steps, distance, calories and territory). Pausing only the clock
+     * is what produced a session reporting a pause-excluded duration next to a
+     * pause-included step volume (F-02).
+     */
     fun onTogglePause() = intent {
         if (!state.isTracking) return@intent
         if (state.isPaused) {
             activeRunController.resume()
+            hexCaptureEngine.setPaused(false)
             reduce { state.copy(isPaused = false) }
         } else {
             activeRunController.pause()
+            hexCaptureEngine.setPaused(true)
             reduce { state.copy(isPaused = true) }
         }
     }
@@ -207,7 +227,10 @@ class CaptureScreenModel(
         // service's first tick already see the restored counters.
         hexCaptureEngine.resumeTracking(
             initialSessionSteps = checkpoint.sessionSteps,
-            initialHexesToSteps = HexStepsCodec.decode(checkpoint.hexesToStepsJson)
+            initialHexesToSteps = HexStepsCodec.decode(checkpoint.hexesToStepsJson),
+            // Restore the pause into the engine too, not just the UI state: a
+            // run that died while paused must resume accruing nothing.
+            isPaused = checkpoint.isPaused
         )
         activeRunController.startRun(checkpoint.runId, timing)
 
@@ -523,5 +546,15 @@ class CaptureScreenModel(
         // ActiveRunController and the foreground service keep the run alive in
         // the background. A later re-entry detects the LIVE engine and adopts
         // it. Ending the run only ever happens via an explicit Stop & Finish.
+        //
+        // F-10: the location subscription is different — it is released here
+        // whenever no run is live. With no run active, a visible capture screen
+        // was the sole reason to hold high-accuracy GPS, so leaving the screen
+        // must drop it. While a run IS live the subscription stays: it belongs
+        // to the run, not to this screen, and the run keeps accruing territory
+        // in the background.
+        if (!hexCaptureEngine.state.value.isTracking) {
+            hexCaptureEngine.stopLocationMonitoring()
+        }
     }
 }

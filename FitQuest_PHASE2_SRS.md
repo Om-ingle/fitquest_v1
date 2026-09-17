@@ -10,11 +10,11 @@
 | **Project name** | FitQuest |
 | **File** | `FitQuest_PHASE2_SRS.md` (repository root) |
 | **Purpose** | Long-term living development context. Enables a developer or AI agent to resume after 6–12 months without re-deriving settled decisions or rewriting working systems. |
-| **Last updated** | 2026-09-12 |
+| **Last updated** | 2026-09-12 (M10 implementation) |
 | **Current project phase** | Phase 2 — post-presentation development |
-| **Current milestone** | **M10 — Telemetry & Run Integrity** (not started) |
+| **Current milestone** | **M10 — Telemetry & Run Integrity** — code complete; real-device verification outstanding (§7.5) |
 | **Document status** | Active, living. Update at the end of every milestone. |
-| **Repository state at authoring** | branch `main`, HEAD `53e35f7` ("gradel"), working tree clean |
+| **Repository state at authoring** | branch `main`, HEAD `46c332e` ("docs: add Phase 2 living SRS"). M10's changes are **uncommitted working-tree modifications** — the project owner controls Git history (§16). |
 
 ### Source-of-truth hierarchy
 
@@ -52,7 +52,7 @@ The user starts a run. GPS position is indexed into **Uber H3 resolution-10 hexa
 3. Live map with own territory, rival territory, and current hex — **PARTIALLY IMPLEMENTED** (§5 F-06: no legend, no hex inspection)
 4. Live AI coaching pushed over WebSocket, spoken aloud via native TTS — **IMPLEMENTED**
 5. Finish run → local save → background sync → XP and territory awarded — **IMPLEMENTED**
-6. Home dashboard: steps, goal progress, XP, streak, quests, AI coach card — **PARTIALLY IMPLEMENTED** (§5 F-01: today's steps undercount)
+6. Home dashboard: steps, goal progress, XP, streak, quests, AI coach card — **IMPLEMENTED**. The step figure is *steps recorded during runs* on the device-local day (the app has no ambient step source); the card states this (§5 F-01, resolved in M10).
 7. Leaderboard of real users by territory — **IMPLEMENTED** (§5 F-05: single metric, no pagination)
 8. Achievements / Trophies — **IMPLEMENTED** (device-local only, §5 F-13)
 
@@ -264,8 +264,8 @@ Every row below was re-verified against the repository on 2026-09-12, not copied
 
 | ID | Area | Current Problem | Impact | Planned Resolution | Priority | Milestone |
 |---|---|---|---|---|---|---|
-| **F-01** | Daily telemetry | `HomeTab.kt` reads `observeRecentSessions(limit = 3)` then filters to today, so a 4th run in a day is dropped. Separately, only run-tracked steps are counted; ambient steps from `TYPE_STEP_COUNTER` are never included. | Home undercounts and disagrees with the snapshot sent to the backend. Downstream ML trains on this table. | Query the day window (`getSessionsBetween`) instead of "3 most recent"; make the definition of "today's steps" explicit in the UI. Ambient steps only if requirements justify it. | **P0** | M10 |
-| **F-02** | Pause/resume | `HexCaptureEngine.applyStepDelta()` guards on `isTracking` only, never `isPaused`. Steps, per-hex tallies, distance and calories keep accruing while paused. | Session reports paused-excluded duration alongside pause-included step volume → internally inconsistent telemetry. | Gate step collection and hex attribution on pause; freeze distance/calories; reflect paused state in UI and FGS notification. | **P0** | M10 |
+| **F-01** | Daily telemetry | ~~`HomeTab.kt` reads `observeRecentSessions(limit = 3)` then filters to today, so a 4th run in a day is dropped.~~ **FIXED in M10.** Home now reads all sessions over the device-local day and totals them with `DailyActivitySnapshotBuilder.daySteps()` — the same function `build()` uses — so Home and the backend snapshot are one arithmetic by construction. The card is labelled "Steps recorded during today's runs". | Home no longer undercounts and can no longer disagree with the snapshot. **Definition:** this is *run* steps, not everything the phone recorded. | Ambient steps remain deliberately unimplemented (§7.1). | **P0** | **M10 — resolved** |
+| **F-02** | Pause/resume | ~~`HexCaptureEngine.applyStepDelta()` guards on `isTracking` only, never `isPaused`.~~ **FIXED in M10.** `HexCaptureSnapshot` carries `isPaused`; both `applyStepDelta` and `applyLocationUpdate` are gated on it; `CaptureScreenModel.onTogglePause()` drives the engine and the controller together; the HUD and the FGS notification show the paused state. | A paused run now accrues no steps, hexes, distance or calories, so duration and step volume agree. Paused deltas are discarded, never banked — resuming produces no catch-up jump. | — | **P0** | **M10 — resolved** |
 | **F-03** | Live coaching | Client stops after 5 reconnect attempts until the next foreground. No jitter, no connectivity awareness. Server keeps no backlog and skips generation with no live session. | Live coaching dies silently mid-run; user is never told. | Jittered/connectivity-aware retry; reconnect after foreground reconcile; explicit offline state. Decide backlog explicitly. | **P0** | M12 |
 | **F-04** | Identity | `get_current_user()` returns the constant `DEV_USER_ID`. `decode_supabase_jwt()` exists in `core/security.py` but **is imported by nothing**. | Blocks friends, meaningful leaderboard identity, server-authoritative progression, meaningful multi-user testing. | Activate the dormant JWT path; add an auth subject column; real login on Android + secure token storage + interceptor. | **P0** | M11 |
 | **F-05** | Leaderboard | `select(User)` loads **all** users into memory, sorted in Python, no pagination. One metric (`hexes`). Client-side District Tier ladder matches nothing server-side. | Will not scale past small user counts; tier display is unverifiable against the server. | Ranked query + pagination; make metric explicit; server-driven or explicitly-cosmetic tiers; pull-to-refresh and offline fallback. | **P1** | M13 |
@@ -273,7 +273,7 @@ Every row below was re-verified against the repository on 2026-09-12, not copied
 | **F-07** | Quests | Six backend quest routes exist; **Android calls none**. Quest progress is local-Room-only against a locally generated daily set. | Two devices on one account hold divergent quest state; server never knows. | Server-authoritative quest generation and progress computed from run-sync outcomes; local cache for offline. | **P1** | M14 |
 | **F-08** | Profile sync | SRS §19's fourth required flow is absent. Profile lives only in the Room row `local_user`. `user.total_hexes_captured` is **never incremented**. | Profile, level, XP and streak are device-local and device-specific; `/users` routes unused. | Write-through + foreground pull with server-wins resolution; backend gains XP/level representation. | **P1** | M14 |
 | **F-09** | Map aggregation | Below `MIN_DETAIL_ZOOM = 14.0` the endpoint returns `is_aggregated=True` with empty `hexes` **and empty `heatmaps`**; the code comments that the aggregation algorithm is not implemented. | Zoomed out, the map shows nothing — the natural "see my empire" view is blank. | Implement H3 parent-cell roll-up; populate `heatmaps`; move viewport filtering into SQL. | **P1** | M13 |
-| **F-10** | Battery / privacy | `HexCaptureEngine.init` calls `startLocationMonitoring()`; `stopTracking()` cancels only `stepsJob`, so **`locationJob` runs for the whole process lifetime**. | Continuous high-accuracy GPS with no run active — a real battery drain and a privacy concern. | Cancel `locationJob` on stop; adaptive sampling; consider coarser priority while paused. | **P2** (leak fix pulled into M10) | M10 / M15 |
+| **F-10** | Battery / privacy | ~~`HexCaptureEngine.init` calls `startLocationMonitoring()`; `stopTracking()` cancels only `stepsJob`, so **`locationJob` runs for the whole process lifetime**.~~ **LEAK FIXED in M10.** `stopLocationMonitoring()` releases the subscription; `stopTracking()` calls it, and `CaptureScreenModel` owns the screen-visibility half (`startLocationMonitoring()` on entry, release on dispose when no run is live). | No subscription outlives a run, and none is held while the capture screen is closed with nothing running. | Remainder (adaptive sampling interval, coarser priority while paused) deferred. | **P2** (leak fixed in M10) | **M10 — leak resolved** / M15 (remainder) |
 | **F-11** | Horizontal scaling | Trigger engine, dedupe LRU, WS session registry and coach cache are all **process-local**. No Redis in either requirements file. | Two backend instances split coaching state arbitrarily — a push on A is invisible to a socket on B. | Substitute Redis behind the existing documented seams. | **P2** | M15 (only when a 2nd instance is real) |
 | **F-12** | Prod hardening | CORS is `allow_origins=["*"]`; no rate limiting on LLM-spending endpoints; `supabase_jwt_secret` defaults to `"change-me"`; **no CI**. | Prototype-grade security posture; both test suites are run manually. | Restrict CORS; fail fast on default secrets; rate-limit coach/RAG; CI on every change. | **P2** | M11 (CI) / M15 |
 | **F-13** | Achievements | 8+ badges evaluated client-side only; nothing server-side references them. | Unlock state is device-local; not portable, not authoritative. | Evaluate inside the existing run-sync transaction; new tables + migration. | **P2** | M14 |
@@ -301,6 +301,7 @@ Sequencing is driven by two constraints, not by feature appeal: **correctness it
 
 ### M10 — Telemetry & Run Integrity
 
+- **Status:** **COMPLETE 2026-09-12 — code plus real-device verification (§7.6).** Android unit tests green — 161 tests in 22 classes, 0 failures. A second F-10 leak (the engine arming GPS at construction, on every launch) was found only on device and fixed.
 - **Objective:** Make the run data the rest of the system depends on correct.
 - **Scope:** F-01 (daily telemetry correctness), F-02 (pause/resume integrity), plus the F-10 `locationJob` leak fix at near-zero marginal cost.
 - **Included F-items:** F-01, F-02, F-10 (leak only).
@@ -413,7 +414,7 @@ Sequencing is driven by two constraints, not by feature appeal: **correctness it
 
 ## 7. M10 Detailed Definition — Telemetry & Run Integrity
 
-**Status: NOT STARTED. Scope is F-01 and F-02 only.**
+**Status: COMPLETE 2026-09-12 (code plus real-device verification, §7.6). Scope is F-01 and F-02 only, plus the F-10 leak fix. All eight §7.4 exit criteria are met; the one residual gap is that criterion 2's step-discard path was confirmed on device only by counters holding with the sensor live, not by genuine step events during a pause.**
 
 This milestone changes no database schema, no API contract, and no backend behaviour. It is an Android correctness milestone.
 
@@ -516,6 +517,71 @@ Any pause fix must not break this. In particular, do not "simplify" the buffer a
 6. Existing Android tests remain green; new tests cover each of 1–5.
 7. A real-device run confirms 1–3 with logcat evidence.
 8. No backend, schema, or API change was required.
+
+### 7.5 M10 Implementation Record (2026-09-12)
+
+**Files changed — all under `apps/app/fitquest/src/`.**
+
+| File | Change |
+|---|---|
+| `main/.../core/capture/HexCaptureEngine.kt` | `HexCaptureSnapshot` gains `isPaused`; `applyStepDelta` and `applyLocationUpdate` are gated on it; `startLocationMonitoring()` made public and a new `stopLocationMonitoring()` added; new `setPaused(Boolean)`; `startTracking`/`resumeTracking`/`stopTracking` seed or clear the flag; `stopTracking` releases the location subscription; the construction-time `init { startLocationMonitoring() }` is **removed** (see the second F-10 leak below). |
+| `main/.../features/capture/CaptureScreenModel.kt` | Mirrors `snapshot.isPaused` into `CaptureState` (engine is the single source of truth); `onTogglePause` drives controller **and** engine; `onResumeRecovery` passes `checkpoint.isPaused` to `resumeTracking`; re-arms location monitoring on entry; releases it in `onDispose` when no run is live. |
+| `main/.../ui/capture/CurrentRunScreen.kt` | HUD status reads `PAUSED` / `ACTIVE RUN` / `STANDBY`. |
+| `main/.../core/run/RunTrackingService.kt` | Foreground notification title and text reflect the checkpoint's `isPaused`. |
+| `main/.../core/telemetry/DailyActivitySnapshotBuilder.kt` | New `daySteps(sessions, forTimestampMillis)`; `build()` now calls it instead of repeating the sum. |
+| `main/.../ui/home/HomeTab.kt` | Today's steps read from `observeAllSessions()` and totalled by `daySteps`; card labelled "Steps recorded during today's runs". |
+| `test/.../core/capture/HexCaptureSnapshotAccountingTest.kt` | +5 pause tests (11 → 16). |
+| `test/.../core/telemetry/DailyActivitySnapshotBuilderTest.kt` | +3 day-total tests (6 → 9). |
+
+**Deliberately NOT changed:** `RunTiming.kt` (derivation is correct); `ActiveRunEntity` (already carried `isPaused`); `RunSessionDao` / `RunSessionRepository` (a new interface method would have broken four test fakes — `observeAllSessions()` already existed and is implemented by all of them); the `RunSyncPayload` shape (no `paused_seconds` field was added — not required by the fix); **every file under `apps/api/`**.
+
+**Impact statement:** `Database migration: NONE` · `API contract change: NONE` · `Backend behavior change: NONE`.
+
+**Exit-criteria status.** Statuses below reflect the 2026-09-12 real-device session (§7.6).
+
+| # | Criterion | Status | Basis |
+|---|---|---|---|
+| 1 | Home equals the snapshot for any number of runs in a day | **MET** | Both call `daySteps()`; test `every run of the day counts, not just the three most recent`; device: 165 on Home against `steps=165` in `userdailyactivity` |
+| 2 | Nothing accrues while paused; resume continues correctly | **MET** | Tests `steps while paused are discarded and never buffered`, `location fixes while paused move the display without capturing territory`, `resuming continues from the paused totals` |
+| 3 | Pause survives process death | **MET** | `RunTimingTest.checkpointRoundTripPreservesTiming` plus device: recovery dialog reported `Status: Paused` with the frozen `Elapsed: 01:52`, and Resume Run restored the engine to `PAUSED` |
+| 4 | Invariant holds across pause/resume and process death | **MET** | `pausing preserves the pre-hex buffer and drains it exactly once on resume`, `the invariant holds across repeated pause resume cycles`; buffer-not-checkpointed semantics unchanged |
+| 5 | No location subscription outlives a run | **MET** | `stopTracking()` and `onDispose()` both release it; device `dumpsys location` shows `gps provider: service: ProviderRequest[OFF]` after both the leave-screen path and Stop & Finish |
+| 6 | Existing tests green; new tests cover 1–5 | **MET except 3/5** | `:app:testRailwayDebugUnitTest` — 161 tests / 22 classes, 0 failures, 0 errors. 3 and 5 remain device-only (see below) |
+| 7 | Real-device run confirms 1–3 with logcat | **MET** | Samsung SM-M325F, Android 13, `railwayDebug` build — A/B/C/D all observed (§7.6) |
+| 8 | No backend/schema/API change required | **MET** | No file under `apps/api/` was touched |
+
+Criterion 2's step-accrual half was confirmed only by the counters holding while the step sensor stayed connected (`Step Counter … connections=2`); no genuine step events occurred during a pause window, so the `applyStepDelta` discard path is still verified by unit test rather than on device.
+
+**Impact statement:** `Database migration: NONE` · `API contract change: NONE` · `Backend behavior change: NONE`.
+
+### 7.6 M10 Real-Device Verification Record (2026-09-12)
+
+Device: Samsung SM-M325F (Galaxy M32), Android 13, `railwayDebug` against the Railway production backend.
+
+**A second F-10 leak, found only on device.** The first F-10 fix released the subscription when the capture screen was disposed without a live run — necessary, but not sufficient. `HexCaptureEngine` is a Koin `single` injected by `MainActivity` (to read `state.value.isTracking` for cold-start routing), and its `init` block called `startLocationMonitoring()` unconditionally. Constructing the engine therefore armed high-accuracy GPS on **every launch, on every screen**, and nothing released it on the Home path. Measured on device:
+
+| App state | `gps provider` service before | after |
+|---|---|---|
+| Force-stopped | `ProviderRequest[OFF]` | `ProviderRequest[OFF]` |
+| Freshly launched, sitting on Home | `ProviderRequest[@+2s0ms, HIGH_ACCURACY, WorkSource{10354 com.example.mobileapp}]` | `ProviderRequest[OFF]` |
+| Capture screen visible (standby preview) | `[@+2s0ms, HIGH_ACCURACY, …]` | `[@+2s0ms, HIGH_ACCURACY, …]` (unchanged — by design) |
+| Capture screen closed, no run active | (not released on the launch path) | `ProviderRequest[OFF]` |
+
+The fix removes the construction-time arm; monitoring is now demand-driven — the capture screen arms it while visible, and `startTracking()` re-arms it for a run, which outlives the screen. `MainActivity`'s routing read is unaffected (it needs only the `isTracking` boolean), and `HomeTab` never reads engine location state. Evidence note: the `dumpsys location` section that matters is the per-provider `service:` line under **Location Providers**; the `SEC Dump for updateRequirements` block further down is Samsung's *historical* log and still lists old FitQuest requests from 2026-09-06 — reading that block instead of the provider state gives a false positive.
+
+**Scenario A — pause freezes accrual.** HUD `ACTIVE RUN` → `PAUSED`; foreground-service notification title exactly `⏸ FitQuest Run Paused` (id 1001, channel `fitquest_run_active`). Across ~60 s paused, elapsed held at `01:52` and Steps/Distance/Calories/Hexes stayed flat while `Step Counter (handle=0x13)` still reported `connections=2` — the subscription was live and nothing accrued.
+
+**Scenario B — finish pairing.** Summary dialog after Stop & Finish: `Duration 02:31`, `Total Steps 48`, `2 Hexagons Conquered`, `+120 XP`. The ~4 minutes of paused wall-clock were absent from the duration (a running clock would have read ~06:31), and the step figure matched the value frozen at pause — the two exclude the same interval.
+
+**Scenario C — pause survives process death.** `am force-stop` while paused, then relaunch: recovery dialog `🏃 Previous Run Found` — `Steps: 48`, `Distance: 0.04 km`, `Elapsed: 01:52`, `Status: Paused`. `Elapsed` restored the frozen value rather than wall-clock. Tapping **Resume Run** restored `PAUSED` in the HUD with elapsed still `01:52`, and `dumpsys location` then showed the run holding the subscription (`ProviderRequest[@+2s0ms, HIGH_ACCURACY]`). No post-resume jump: 01:52 → 01:57 → 02:18.
+
+**Scenario D — location released.** Covered by the table above; both the leave-the-screen path and Stop & Finish end at `ProviderRequest[OFF]`.
+
+**Criterion 1 end-to-end, ≥4 runs.** Four runs completed in one device-local day with genuinely differing step counts (48 / 75 / 17 / 25). Home rendered `165 / 8000 steps` under the caption `Steps recorded during today's runs`; the backend's `userdailyactivity` row for `2026-09-12` held `steps=165, active_minutes=6, goal_steps=8000, hexes_captured=7`; the `runsession` ledger carried all four run ids matching Room one-for-one. The capped read this fix replaced (`observeRecentSessions(limit = 3)` then filter to today) would have produced 117. The coach card independently corroborated the server value, quoting "48 steps and 3 active minutes toward an 8,000-step goal" from the backend after the first run synced.
+
+**Sync-path note (not an M10 defect).** The first Stop & Finish surfaced `Saved offline — provisional XP (no auto-retry)`, because the device's Wi-Fi was associated but passing no traffic (`UnknownHostException` on Android's own connectivity probe, gateway unreachable) while the host PC on the same router resolved `fitquest-api-production.up.railway.app` normally. After bouncing the phone's Wi-Fi, `RunReconciler` replayed the unsynced row on the next cold start — foregrounding an already-visible activity does not fire `MainActivity.onStart`, so the reconcile only runs on a genuine start. Backend authoritatively re-scored that run's XP from 120 to 100 on sync, which is the intended server-authoritative behavior.
+
+**Remaining limitations.** Ambient steps remain unimplemented by design (§7.1) — Home's figure is run steps only. The `locationJob` release and the engine-side paused-recovery are not unit-testable in this codebase because `HexCaptureEngine`'s collaborators are Android-backed; they rest on the device evidence above. Nothing was committed: Git history is the project owner's.
 
 ---
 
@@ -804,6 +870,10 @@ Living log of established decisions. Every entry is grounded in the SRS, the rep
 | **D-022** | 2026-09-12 | Android ships **two backend flavors**: `railway` (production URL fixed at build time) and `local` (overridable LAN fallback). The production flavor deliberately does not read `.env`. | Prevents a local LAN IP from leaking into the production APK. | Android, deployment | Active |
 | **D-023** | 2026-09-12 | The recommendation engine remains rules-first; ML is data-gated, not effort-gated. | F-01 must fix telemetry before it becomes training data. | AI, research | Active |
 | **D-024** | 2026-09-12 | Phase 2 proceeds as M10–M16 with correctness before identity before multi-user features. | Two ordering constraints: output-dependence and identity-dependence. | Process | Active |
+| **D-025** | 2026-09-12 | "Today's steps" has exactly one definition — `DailyActivitySnapshotBuilder.daySteps()`. Home and the sync snapshot both call it; the Home card states that it counts run steps only. | Two independent sums is how Home and the backend came to disagree (F-01). One function makes agreement structural rather than coincidental. Ambient steps stay out of scope — adding them would introduce a second step source and a double-count hazard. | Android, telemetry | Active |
+| **D-026** | 2026-09-12 | Paused step deltas are **discarded**, never banked into `sessionSteps`/`pendingStepsBeforeHex` for later removal. | The step sensor reports a delta per event, so an ignored delta leaves no residue and resuming cannot produce a catch-up jump. Banking would break the M9.2 exactly-once invariant (§7.3). | Android, telemetry | Active |
+| **D-027** | 2026-09-12 | The location subscription is owned jointly: the run (while live) and the visible capture screen (for the standby hex preview). `stopTracking()` releases it; `CaptureScreenModel.onDispose()` releases it only when no run is live. | A blanket release on screen dispose would kill territory capture for a backgrounded run; never releasing it was the F-10 leak. Ownership had to be split rather than assigned to one side. | Android, battery/privacy | Active |
+| **D-028** | 2026-09-12 | `HexCaptureEngine` must **not** arm location monitoring in its `init` block. Arming is strictly demand-driven: the capture screen arms it while visible, `startTracking()` re-arms it for a run. | The engine is a Koin `single` injected by `MainActivity` for cold-start routing, so a construction-time arm switched on high-accuracy GPS on every launch and every screen, with no release on the Home path. Found only on device — the first F-10 fix addressed the screen-dispose path and this one was independent of it. | Android, battery/privacy | Active |
 
 ---
 
@@ -814,7 +884,7 @@ Update this section at the end of every milestone. Do not mark anything complete
 | Milestone | Status | Date completed | Evidence |
 |---|---|---|---|
 | **M1–M9** (pre-Phase 2) | COMPLETE | through 2026-09-07 | See §4 and `docs/agent_ledger.md` |
-| **M10 — Telemetry & Run Integrity** | **NOT STARTED** | — | — |
+| **M10 — Telemetry & Run Integrity** | **COMPLETE** | code 2026-09-12; device-verified 2026-09-12 | §7.5, §7.6; `:app:testRailwayDebugUnitTest` 161 tests / 22 classes, 0 failures; Samsung SM-M325F scenarios A–D; Home `165 / 8000` against `userdailyactivity.steps=165` |
 | **M11 — Real Authentication & Identity** | NOT STARTED | — | — |
 | **M12 — Live Coaching Reliability** | NOT STARTED | — | — |
 | **M13 — Shared World** | NOT STARTED | — | — |
@@ -833,6 +903,16 @@ Update this section at the end of every milestone. Do not mark anything complete
 - Known limitations carried forward:
 - Decisions recorded (§13):
 ```
+
+### M10 — Telemetry & Run Integrity   [COMPLETE 2026-09-12 — device verified, §7.6]
+
+- **Changes:** F-01 — Home reads the whole device-local day and totals it with the same function the sync snapshot uses; the card is labelled as run steps. F-02 — the capture engine carries a paused flag and accrues nothing while paused; the HUD and the FGS notification show the paused state. F-10 (leak only) — the location subscription is released when a run ends and when the capture screen closes with no run live, **and the engine no longer arms GPS merely by being constructed** (a second leak, found on device).
+- **Files / modules:** `HexCaptureEngine.kt`, `CaptureScreenModel.kt`, `CurrentRunScreen.kt`, `RunTrackingService.kt`, `DailyActivitySnapshotBuilder.kt`, `HomeTab.kt`. Nothing under `apps/api/`.
+- **Tests added or updated:** `HexCaptureSnapshotAccountingTest` +5 (11 → 16); `DailyActivitySnapshotBuilderTest` +3 (6 → 9). Suite: 161 tests in 22 classes, 0 failures (was 153).
+- **Real-device evidence:** Samsung SM-M325F, Android 13, `railwayDebug`. Scenarios A–D in §7.6: pause freezes accrual with the sensor live; summary pairs pause-excluded duration (02:31) with pause-excluded steps (48); process death restores `Status: Paused` at the frozen `01:52`; `gps provider: ProviderRequest[OFF]` after both leave-screen and Stop & Finish; four runs in one day render `165 / 8000` on Home against `steps=165` server-side.
+- **Known limitations carried forward:** criterion 2's step-discard path was confirmed on device only by counters holding while the sensor stayed connected, not by real step events during a pause — it remains unit-test-verified. Ambient steps remain unimplemented by design.
+- **Decisions recorded (§13):** D-025, D-026, D-027, D-028.
+- **Detailed record:** §7.5.
 
 ---
 
@@ -914,22 +994,18 @@ When in doubt: make the change, report it, and leave Git entirely to the user.
 
 ```
 CURRENT MILESTONE:
-M10 — Telemetry & Run Integrity
+M10 — Telemetry & Run Integrity  (COMPLETE 2026-09-12)
 
 NEXT ACTION:
-Perform a read-only M10 implementation audit/plan before making code changes.
+None outstanding for M10 — all eight §7.4 exit criteria are met and the
+device evidence is recorded in §7.6. M11 may begin.
+
+Git: M10's changes are uncommitted. The project owner commits.
 ```
 
-**Stage 1 — Read-only M10 implementation audit.** Before any code is touched:
+**Completed — Stage 1 (read-only audit), Stage 2 (implementation), Stage 3 (real-device verification).** Recorded in §7.5 and §7.6, including the exit-criteria table, the files deliberately left unchanged, and the second F-10 leak found on device.
 
-1. Re-verify every claim in §7 against the repository (they were verified on 2026-09-12; confirm nothing has drifted).
-2. Trace the full step path end to end: `StepSensorManager` → `HexCaptureEngine.applyStepDelta` → `CaptureScreenModel.finishActiveRun` → `RunSessionEntity` → `DailyActivitySnapshotBuilder` → `RunSyncPayload` → `upsert_daily_activity`. Identify every point where paused steps enter and where the two telemetry sources diverge.
-3. Identify every call site of `observeRecentSessions` and `getSessionsBetween` and determine which are affected by the limit-3 defect.
-4. Decide — explicitly, and before coding — what "today's steps" means to the user, and whether ambient step capture is in scope. **The default answer is no**: no current requirement demands it (§7.1).
-5. Confirm the §7.3 invariant and write down the exact place a pause guard must sit so the invariant cannot break.
-6. Produce an implementation plan with the test list that will satisfy §7.4's exit criteria.
-
-**Stage 2 — Implement** only after Stage 1's plan is reviewed. M10 changes no schema, no API contract and no backend behaviour; if a plan starts to require one, stop and re-examine it against §8.
+**Then — M11 (Real Authentication & Identity).** M11 changes the `get_current_user()` contract. M10's device criteria are now closed, so the dependency is satisfied.
 
 > **Do not start M11 until M10's exit criteria (§7.4) are satisfied.**
 

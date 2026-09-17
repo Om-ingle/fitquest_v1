@@ -5,6 +5,7 @@ from sqlmodel import Session
 
 from app.api.dependencies import DEV_USER_ID
 from app.core.database import engine
+from app.modules.map.service import create_hex
 from app.modules.users.models import User
 
 
@@ -16,18 +17,45 @@ def _create_user(client, username):
 
 def _seed_dev_user():
     """The dev user must exist for lifetime-step tracking (seed.py creates it
-    in real environments; SQLite does not enforce the FK, so tests must)."""
+    in real environments; SQLite does not enforce the FK, so tests must).
+
+    M11 — conftest already creates and links this row before the client starts;
+    the guard keeps this call site valid either way.
+    """
     with Session(engine) as db:
         if db.get(User, uuid.UUID(DEV_USER_ID)) is None:
             db.add(User(id=uuid.UUID(DEV_USER_ID), username="devuser"))
             db.commit()
 
 
+def _seed_rival_hex(king_id, hex_id: str, defense: int) -> None:
+    """Another player's territory, seeded at the service layer.
+
+    M11 — a rival's hex cannot be created through ``POST /api/v1/map`` any
+    more: that route refuses to claim territory for anyone but the caller. In
+    production a rival's hex arrives through THEIR run sync, so writing the row
+    directly is the faithful way to set one up.
+    """
+    with Session(engine) as db:
+        create_hex(db, hex_id, uuid.UUID(str(king_id)), defense)
+
+
 def test_create_and_get_user(client):
+    """Creation still works; READING is now scoped to the caller.
+
+    M11 — ``GET /users/{id}`` is self-scoped, so the newly created account is
+    not readable by the dev user who just created it. The round trip is
+    therefore asserted against the caller's OWN id, and the refusal is asserted
+    explicitly rather than left implicit.
+    """
     created = _create_user(client, "runner1")
-    response = client.get(f"/api/v1/users/{created['id']}")
-    assert response.status_code == 200
-    assert response.json()["username"] == "runner1"
+
+    mine = client.get(f"/api/v1/users/{DEV_USER_ID}")
+    assert mine.status_code == 200
+    assert mine.json()["id"] == DEV_USER_ID
+
+    other = client.get(f"/api/v1/users/{created['id']}")
+    assert other.status_code == 403
 
 
 def test_duplicate_username_rejected(client):
@@ -75,10 +103,7 @@ def test_run_sync_defends_owned_hex(client):
 
 def test_run_sync_steals_rival_hex(client):
     rival = _create_user(client, "rival")
-    client.post(
-        "/api/v1/map",
-        json={"hex_id": "8a2a1072b59ffff", "king_id": rival["id"], "defense_score_steps": 100},
-    )
+    _seed_rival_hex(rival["id"], "8a2a1072b59ffff", defense=100)
 
     response = client.post(
         "/api/v1/runs/sync",
@@ -96,10 +121,7 @@ def test_run_sync_steals_rival_hex(client):
 
 def test_run_sync_does_not_steal_when_defense_holds(client):
     rival = _create_user(client, "rival")
-    client.post(
-        "/api/v1/map",
-        json={"hex_id": "8a2a1072b59ffff", "king_id": rival["id"], "defense_score_steps": 500},
-    )
+    _seed_rival_hex(rival["id"], "8a2a1072b59ffff", defense=500)
 
     response = client.post(
         "/api/v1/runs/sync",

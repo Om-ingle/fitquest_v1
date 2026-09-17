@@ -192,4 +192,106 @@ class HexCaptureSnapshotAccountingTest {
         assertEquals(0, result.sessionSteps)
         assertEquals(0, result.pendingStepsBeforeHex)
     }
+
+    // ── M10 F-02: paused runs accrue nothing ────────────────────────────────
+
+    /**
+     * A paused run is a live run that is not moving. Deltas arriving while
+     * paused must be DISCARDED, never banked into the totals for later
+     * removal — the sensor reports a delta per event, so one ignored delta
+     * leaves no residue and resuming produces no catch-up jump.
+     */
+    @Test
+    fun `steps while paused are discarded and never buffered`() {
+        var s = HexCaptureSnapshot(isTracking = true, isPaused = true)
+        assertEquals("a paused run at zero stays at zero", 0, s.applyStepDelta(40).sessionSteps)
+
+        s = s.copy(currentHexId = hexA)
+        val after = s.applyStepDelta(40)
+        assertEquals("no steps accrue to the run total", 0, after.sessionSteps)
+        assertEquals("nothing is banked for a later fix", 0, after.pendingStepsBeforeHex)
+        assertTrue("no territory accrues either", after.hexesToSteps.isEmpty())
+        assertInvariant(after)
+    }
+
+    /**
+     * While paused the fix still drives the map — the user must see where they
+     * are — but it must not capture territory or drain the pre-hex buffer.
+     */
+    @Test
+    fun `location fixes while paused move the display without capturing territory`() {
+        var s = HexCaptureSnapshot(isTracking = true, isPaused = true)
+        s = s.applyLocationUpdate(hexA, listOf(hexA, hexB), here)
+
+        assertEquals("position still tracks", here, s.currentLocation)
+        assertEquals("current hex still resolves", hexA, s.currentHexId)
+        assertEquals(listOf(hexA, hexB), s.nearbyHexIds)
+        assertTrue("but no hex is registered", s.hexesToSteps.isEmpty())
+        // Moving on to a second hex while paused captures nothing there either.
+        val moved = s.applyLocationUpdate(hexB, listOf(hexB), here)
+        assertTrue(moved.hexesToSteps.isEmpty())
+        assertInvariant(moved)
+    }
+
+    /**
+     * The buffer is preserved untouched across a pause and drained exactly once
+     * afterwards — pausing must not attribute buffered steps to whatever hex the
+     * user happened to be standing in when they paused.
+     */
+    @Test
+    fun `pausing preserves the pre-hex buffer and drains it exactly once on resume`() {
+        var s = HexCaptureSnapshot(isTracking = true)
+        s = s.applyStepDelta(30)                 // no fix yet → buffered
+        assertEquals(30, s.pendingStepsBeforeHex)
+
+        // Pause, then a fix arrives: it must not drain the buffer.
+        s = s.copy(isPaused = true)
+        s = s.applyLocationUpdate(hexA, listOf(hexA), here)
+        assertEquals("buffer survives the pause intact", 30, s.pendingStepsBeforeHex)
+        assertTrue(s.hexesToSteps.isEmpty())
+        assertEquals(30, s.sessionSteps)
+        assertInvariant(s)
+
+        // Resume: the next fix drains it once, to that hex.
+        s = s.copy(isPaused = false)
+        s = s.applyLocationUpdate(hexA, listOf(hexA), here)
+        assertEquals(0, s.pendingStepsBeforeHex)
+        assertEquals(mapOf(hexA to 30), s.hexesToSteps)
+        assertEquals("the buffer is not re-added to the run total", 30, s.sessionSteps)
+        assertInvariant(s)
+    }
+
+    @Test
+    fun `resuming continues from the paused totals`() {
+        var s = HexCaptureSnapshot(isTracking = true)
+        s = s.applyLocationUpdate(hexA, listOf(hexA), here)
+        s = s.applyStepDelta(12)                 // before the pause
+        s = s.copy(isPaused = true)
+        s = s.applyStepDelta(50)                 // walked while paused — ignored
+        s = s.applyLocationUpdate(hexB, listOf(hexA, hexB), here) // not captured
+        s = s.copy(isPaused = false)
+        s = s.applyStepDelta(8)                  // after resuming, now in hex B
+
+        assertEquals(20, s.sessionSteps)         // 12 + 8, never 62
+        assertEquals(mapOf(hexA to 12, hexB to 8), s.hexesToSteps)
+        assertEquals(0, s.pendingStepsBeforeHex)
+        assertInvariant(s)
+    }
+
+    @Test
+    fun `the invariant holds across repeated pause resume cycles`() {
+        var s = HexCaptureSnapshot(isTracking = true)
+        repeat(4) { cycle ->
+            s = s.applyLocationUpdate(if (cycle % 2 == 0) hexA else hexB, listOf(hexA), here)
+            s = s.applyStepDelta(10)
+            s = s.copy(isPaused = true)
+            s = s.applyStepDelta(999)            // ignored
+            s = s.applyLocationUpdate(hexB, listOf(hexB), here) // no capture
+            assertInvariant(s)
+            s = s.copy(isPaused = false)
+            assertInvariant(s)
+        }
+        assertEquals(40, s.sessionSteps)          // 4 × 10
+        assertInvariant(s)
+    }
 }

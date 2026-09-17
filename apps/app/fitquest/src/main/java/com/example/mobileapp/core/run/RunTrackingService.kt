@@ -119,13 +119,19 @@ class RunTrackingService : Service() {
 
     private fun buildNotification(snapshot: ActiveRunEntity): android.app.Notification {
         val contentText = buildString {
+            // The paused state is already persisted on the checkpoint, so the
+            // notification can mirror it without any new plumbing (F-02): a
+            // paused run must not read as actively tracking.
+            if (snapshot.isPaused) append("Paused • ")
             append(snapshot.sessionSteps)
             append(" steps • ")
             append(String.format(Locale.US, "%.2f km", snapshot.distanceMeters / 1000.0))
         }
         val builder = NotificationCompat.Builder(this, RunNotifications.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_run)
-            .setContentTitle("🏃 FitQuest Run Active")
+            .setContentTitle(
+                if (snapshot.isPaused) "⏸ FitQuest Run Paused" else "🏃 FitQuest Run Active"
+            )
             .setContentText(contentText)
             .setOngoing(true)
             .setSilent(true)

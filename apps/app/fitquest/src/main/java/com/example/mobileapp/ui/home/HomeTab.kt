@@ -68,6 +68,7 @@ import com.example.mobileapp.core.network.CoachFetcher
 import com.example.mobileapp.core.network.LiveCoachStore
 import com.example.mobileapp.core.network.RecommendationFetcher
 import com.example.mobileapp.core.network.models.Recommendation
+import com.example.mobileapp.core.telemetry.DailyActivitySnapshotBuilder
 import com.example.mobileapp.ui.capture.CurrentRunScreen
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
@@ -153,11 +154,16 @@ object HomeTab : Tab {
         val recentSessions by runSessionRepo.observeRecentSessions(limit = 3).collectAsState(initial = emptyList())
         val capturedHexes by hexRepo.observeCapturedHexes().collectAsState(initial = emptyList())
 
-        // Calculate today's steps from recent sessions on this date
-        val todayString = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-        val todaySteps = recentSessions
-            .filter { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(it.startedAt)) == todayString }
-            .sumOf { it.totalSteps }
+        // Today's steps. Read from ALL local sessions — never from the three
+        // most recent ones — and totalled by the same function the run-sync
+        // snapshot uses, so Home cannot disagree with the telemetry the backend
+        // receives (F-01). The previous read applied a `LIMIT 3` before
+        // filtering to today, which silently dropped the first run of any day
+        // with four or more runs.
+        val allSessions by runSessionRepo.observeAllSessions().collectAsState(initial = emptyList())
+        val todaySteps = remember(allSessions) {
+            DailyActivitySnapshotBuilder.daySteps(allSessions, System.currentTimeMillis())
+        }
 
         LazyColumn(
             modifier = Modifier
@@ -304,6 +310,16 @@ private fun DailyProgressCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+
+            // State what the number counts. FitQuest records steps only while a
+            // run is active, so "today's steps" is run steps — not everything
+            // the phone saw today. Without this the figure reads as a general
+            // step count and looks like an undercount (F-01).
+            Text(
+                text = "Steps recorded during today's runs",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             Spacer(modifier = Modifier.height(12.dp))
 

@@ -75,10 +75,16 @@ def db():
 
 
 def _seed_user(session, user_id: uuid.UUID, steps: int = 0) -> None:
-    session.add(
-        User(id=user_id, username=f"user-{user_id.hex[-12:]}",
-             total_lifetime_steps=steps)
-    )
+    """Get-or-update the user's row.
+
+    M11 — for the authenticated account the row already exists (conftest links
+    it so requests can authenticate), so this must update rather than insert.
+    """
+    user = session.get(User, user_id)
+    if user is None:
+        user = User(id=user_id, username=f"user-{user_id.hex[-12:]}")
+        session.add(user)
+    user.total_lifetime_steps = steps
     session.commit()
 
 

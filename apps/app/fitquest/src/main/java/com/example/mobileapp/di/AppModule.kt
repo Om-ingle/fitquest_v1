@@ -3,6 +3,12 @@ package com.example.mobileapp.di
 import android.util.Log
 import androidx.room.Room
 import com.example.mobileapp.BuildConfig
+import com.example.mobileapp.core.auth.AuthInterceptor
+import com.example.mobileapp.core.auth.AuthSession
+import com.example.mobileapp.core.auth.EncryptedTokenStore
+import com.example.mobileapp.core.auth.SupabaseAuthClient
+import com.example.mobileapp.core.auth.TokenRefreshAuthenticator
+import com.example.mobileapp.core.auth.TokenStore
 import com.example.mobileapp.core.capture.HexCaptureEngine
 import com.example.mobileapp.core.data.local.FitQuestDatabase
 import com.example.mobileapp.core.data.local.HexRepository
@@ -88,10 +94,38 @@ val appModule = module {
     // application context registered by androidContext() in FitQuestApp.
     single { ActiveRunController(get(), get(), get()) }
 
+    // ── M11 (F-04): authentication ───────────────────────────────────────────
+    // One session per process, and exactly one place that can mint, replace or
+    // destroy it. Everything below consumes it; nothing else owns identity.
+    single<TokenStore> { EncryptedTokenStore(get()) }
+    single {
+        SupabaseAuthClient.create(
+            supabaseUrl = BuildConfig.SUPABASE_URL,
+            anonKey = BuildConfig.SUPABASE_ANON_KEY,
+        )
+    }
+    single { AuthSession(get(), get()) }
+
+    // The two OkHttp collaborators every authenticated client shares. They are
+    // singletons so the 401 refresh is single-flight across the whole process:
+    // two clients holding two authenticators would each redeem the same
+    // rotating refresh token and one of them would lose the session.
+    single { AuthInterceptor { get<AuthSession>().accessToken() } }
+    single {
+        TokenRefreshAuthenticator(refresh = { failed -> get<AuthSession>().refreshBlocking(failed) })
+    }
+
     // Networking: Retrofit/OkHttp against the configurable backend URL.
-    // Android never sees DATABASE_URL or Supabase credentials, and the
-    // deferred-auth backend needs no auth headers for the dev user.
-    single<FitQuestApi> { FitQuestApiClient.create(BuildConfig.BACKEND_BASE_URL) }
+    // Android never holds a backend secret: the only Supabase value in the APK
+    // is the publishable anon key, which identifies the project and confers no
+    // authority — the user's access token is what the backend verifies.
+    single<FitQuestApi> {
+        FitQuestApiClient.create(
+            baseUrl = BuildConfig.BACKEND_BASE_URL,
+            authInterceptor = get(),
+            authenticator = get(),
+        )
+    }
     single { RunSyncer(get()) }
     // Foreground reconciliation of unsynced runs (Fix A): single-flight,
     // replayed through RunSyncer, triggered from MainActivity.onStart.
@@ -115,11 +149,20 @@ val appModule = module {
         // WebSockets are long-lived: the default HTTP read timeout would kill
         // an idle connection, so it is disabled and OkHttp pings to keep the
         // socket (and NAT mapping) alive instead.
+        //
+        // M11: this client carries the SAME auth interceptor and 401
+        // authenticator as the REST client, so the WebSocket handshake presents
+        // the session's bearer token in its headers — the backend refuses an
+        // unauthenticated upgrade with close code 1008 — and a handshake
+        // rejected because the token expired is refreshed and retried by
+        // OkHttp rather than surfacing as a connect failure.
         val wsOkHttp = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .writeTimeout(0, TimeUnit.MILLISECONDS)
             .pingInterval(30, TimeUnit.SECONDS)
+            .addInterceptor(get<AuthInterceptor>())
+            .authenticator(get<TokenRefreshAuthenticator>())
             .build()
         val store = get<LiveCoachStore>()
         CoachingWsClient(
@@ -140,8 +183,14 @@ val appModule = module {
         val ws = get<CoachingWsClient>()
         val reconciler = get<RunReconciler>()
         val cache = get<com.example.mobileapp.core.network.CoachCache>()
+        val session = get<AuthSession>()
         com.example.mobileapp.core.network.CoachForegroundCoordinator(
-            openLiveChannel = { ws.connect() },
+            // M11: only open the channel while a session exists. An
+            // unauthenticated handshake is refused with 1008 and the client
+            // stops there, so asking would be both pointless and noisy.
+            // MainActivity restores the session before the first onStart, so a
+            // returning user with a live session still connects immediately.
+            openLiveChannel = { if (session.currentTokens() != null) ws.connect() },
             reconcileUnsyncedRuns = { reconciler.reconcileUnsyncedRuns() },
             refreshPullAfterNewRun = { cache.ensureLoaded() },
         )

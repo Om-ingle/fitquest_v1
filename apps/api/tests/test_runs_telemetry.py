@@ -13,11 +13,13 @@ import sys
 import uuid
 from pathlib import Path
 
-from sqlmodel import Session, select
+from sqlmodel import Session, SQLModel, select
 
 from app.api.dependencies import DEV_USER_ID
 from app.core.database import engine
 from app.modules.runs.models import UserDailyActivity
+from app.modules.runs.schemas import DailyActivitySnapshot, RunSyncPayload
+from app.modules.runs.service import process_run_sync
 from app.modules.users.models import User
 
 API_DIR = Path(__file__).resolve().parents[1]
@@ -201,12 +203,32 @@ def test_legacy_payload_without_daily_activity_writes_nothing(client):
     assert _get_rows() == []
 
 
-def test_sync_without_user_row_skips_telemetry_but_succeeds(client):
-    # Unseeded environment: the user row is missing, so (mirroring the
-    # lifetime-steps update) telemetry is skipped and the sync still works.
-    response = _sync(client)
-    assert response.status_code == 200
-    assert _get_rows() == []
+def test_sync_without_user_row_skips_telemetry_but_succeeds():
+    """A missing user row skips telemetry; the sync itself still succeeds.
+
+    M11 — this branch is no longer reachable through the API: authenticating a
+    request provisions the user row before the route body runs, so
+    ``POST /runs/sync`` always has one. The branch is still real (it is what
+    keeps a sync from failing against an account whose row is gone), so it is
+    exercised at the service layer — where the route's guarantee does not
+    apply. The dev row is deliberately NOT seeded here.
+    """
+    SQLModel.metadata.create_all(engine)
+    try:
+        with Session(engine) as db:
+            summary = process_run_sync(
+                db,
+                RunSyncPayload(
+                    total_session_steps=350,
+                    hexes_to_steps={},
+                    daily_activity=DailyActivitySnapshot(**_snapshot()),
+                ),
+                uuid.uuid4(),  # no such user row
+            )
+        assert summary.new_total_lifetime_steps == 0
+        assert _get_rows() == []
+    finally:
+        SQLModel.metadata.drop_all(engine)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

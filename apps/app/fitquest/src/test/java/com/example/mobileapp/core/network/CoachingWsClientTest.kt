@@ -5,6 +5,7 @@ import com.example.mobileapp.core.network.models.CoachRetrievalInfo
 import com.example.mobileapp.core.network.models.FitnessContextResponse
 import com.example.mobileapp.core.network.models.Recommendation
 import java.io.IOException
+import java.net.ProtocolException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
@@ -111,6 +112,19 @@ class CoachingWsClientTest {
 
         fun fail() = callbacks.onFailure(IOException("socket failed"))
 
+        /**
+         * The framing the FitQuest backend actually produces for an
+         * unauthenticated connection: it closes BEFORE `accept()`, so the
+         * upgrade is rejected at the HTTP level and OkHttp reports it as a
+         * failed handshake rather than a closed socket.
+         */
+        fun rejectedUpgrade() = callbacks.onFailure(
+            ProtocolException("Expected HTTP 101 response but was '403 Forbidden'")
+        )
+
+        /** A policy close (1008) on a socket the server HAD accepted. */
+        fun refuse() = callbacks.onClosed(WS_CLOSE_POLICY_VIOLATION, "unauthenticated")
+
         fun closeFromServer() = callbacks.onClosed(1001, "server going away")
 
         override fun close(code: Int, reason: String) {
@@ -154,12 +168,13 @@ class CoachingWsClientTest {
         factory: FakeSocketFactory,
         store: RecordingStore,
         maxReconnectAttempts: Int = 5,
+        onStatus: (CoachingWsStatus) -> Unit = {},
     ): CoachingWsClient = CoachingWsClient(
         url = "ws://test/api/v1/ws/coaching",
         socketFactory = factory,
         messageParser = CoachingWsMessageParser::parse,
         onLiveCoach = store::publish,
-        onStatusChanged = {},
+        onStatusChanged = onStatus,
         scope = CoroutineScope(Dispatchers.Unconfined),
         maxReconnectAttempts = maxReconnectAttempts,
         sleeper = { /* no-op: deterministic tests without real waits */ },
@@ -381,7 +396,81 @@ class CoachingWsClientTest {
         assertEquals(30_000L, ws.retryDelayMs(10))
     }
 
-    // ── 11. WebSocket failure never affects the pull CoachFetcher ────────────
+    // ── 11. M11: an authenticated handshake that is refused ──────────────────
+
+    @Test
+    fun `a 1008 close on an accepted socket stops reconnecting`() {
+        // The server accepted the socket and then closed it with a policy
+        // violation (a token revoked mid-session). Reconnecting with the same
+        // credentials can only be refused again, so the loop must stop rather
+        // than hammer the endpoint on every backoff step.
+        val factory = FakeSocketFactory()
+        val statuses = mutableListOf<CoachingWsStatus>()
+        val ws = client(factory, RecordingStore(), onStatus = { statuses += it })
+        ws.connect()
+        assertEquals(1, factory.connectCount)
+
+        factory.sockets.single().refuse()
+
+        assertEquals(1, factory.connectCount)
+        assertEquals(CoachingWsStatus.DISCONNECTED, statuses.last())
+    }
+
+    @Test
+    fun `a later connect after a refusal starts a fresh attempt`() {
+        // A refusal is not a permanent dead end: the next foreground calls
+        // connect() again, by which point the REST path has refreshed the token.
+        val factory = FakeSocketFactory()
+        val ws = client(factory, RecordingStore())
+        ws.connect()
+        factory.sockets.single().refuse()
+
+        ws.connect()
+
+        assertEquals(2, factory.connectCount)
+        assertTrue("the second attempt must actually open", factory.sockets[1].opened)
+        ws.disconnect()
+    }
+
+    @Test
+    fun `a handshake rejected before accept retries within the bounded budget`() {
+        // The framing the real backend produces: it closes BEFORE accept(), so
+        // the client sees a rejected upgrade (HTTP 403), NOT a 1008 close. That
+        // is deliberately treated as an ordinary failure rather than a terminal
+        // refusal — a 403 is also what a JWKS outage looks like from here, and
+        // giving up on the first one would cost live coaching for the whole
+        // session. What must hold is that the retries stay BOUNDED.
+        val factory = FakeSocketFactory()
+        repeat(3) { factory.onNextConnect { it.rejectedUpgrade() } }
+        val ws = client(factory, RecordingStore(), maxReconnectAttempts = 2)
+
+        ws.connect()
+
+        // initial + 2 bounded retries, then it stops quietly.
+        assertEquals(3, factory.connectCount)
+        assertTrue(factory.sockets.none { it.opened })
+    }
+
+    @Test
+    fun `an accepted 1008 is terminal while an ordinary drop still reconnects`() {
+        // The two framings side by side: 1001 on an accepted socket is a server
+        // restart and must be retried; 1008 is a refusal and must not be.
+        val refused = FakeSocketFactory()
+        val refusedWs = client(refused, RecordingStore())
+        refusedWs.connect()
+        refused.sockets.single().refuse()
+
+        val dropped = FakeSocketFactory()
+        val droppedWs = client(dropped, RecordingStore())
+        droppedWs.connect()
+        dropped.sockets.single().closeFromServer()
+
+        assertEquals(1, refused.connectCount)
+        assertEquals(2, dropped.connectCount)
+        droppedWs.disconnect()
+    }
+
+    // ── 12. WebSocket failure never affects the pull CoachFetcher ────────────
 
     @Test
     fun `a dead websocket leaves CoachFetcher fully usable`() {

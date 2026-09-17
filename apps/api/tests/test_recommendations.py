@@ -7,6 +7,7 @@ import pytest
 from app.api.dependencies import DEV_USER_ID
 from app.modules.recommendations.schemas import FitnessContext
 from app.modules.recommendations.service import recommend
+from tests.authkit import ensure_user
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pure rules-engine unit tests (no DB, no HTTP)
@@ -174,16 +175,13 @@ def test_every_context_produces_a_valid_recommendation(scenario):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _create_dev_user(steps: int = 0):
-    """Create the dev user directly (SQLite does not enforce the FK)."""
-    from sqlmodel import Session
+    """Set the authenticated dev account's lifetime steps.
 
-    from app.core.database import engine
-    from app.modules.users.models import User
-
-    with Session(engine) as db:
-        user = User(id=uuid.UUID(DEV_USER_ID), username="devuser", total_lifetime_steps=steps)
-        db.add(user)
-        db.commit()
+    M11 — the row already exists (conftest links the seeded account so requests
+    can authenticate), so this updates it rather than inserting a colliding
+    duplicate.
+    """
+    ensure_user(uuid.UUID(DEV_USER_ID), "devuser", total_lifetime_steps=steps)
 
 
 def _grant_hex(client, hex_id, defense=10):

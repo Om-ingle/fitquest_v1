@@ -39,6 +39,24 @@ import java.util.concurrent.atomic.AtomicInteger
  * the next [connect]. A deliberate [disconnect] cancels the run and never
  * reconnects. Coalescing/cooldown of pushes is a backend concern (M8.3A);
  * this client only needs to stay alive to receive them.
+ *
+ * M11 (F-04): the handshake is authenticated — the transport attaches the
+ * session's bearer token (see [OkHttpCoachingSocketFactory]), and an
+ * unauthenticated connection is refused. There are two framings for that
+ * refusal and the client treats them differently on purpose:
+ *
+ *  * Refused **before** `accept()` — which is what the FitQuest backend does,
+ *    making the upgrade fail with HTTP 403 — arrives as an [onFailure] and is
+ *    retried within the normal bounded budget. It is deliberately NOT terminal:
+ *    a 403 is also what a JWKS outage looks like from here, and giving up on
+ *    the first one would cost live coaching for the rest of the session.
+ *  * A close code [WS_CLOSE_POLICY_VIOLATION] on a socket the server HAD
+ *    accepted is terminal: reconnecting with the same credentials can only be
+ *    refused again, so the loop stops rather than hammering the endpoint on
+ *    every backoff step. See the guard in [runLoop].
+ *
+ * Either way the channel is only opened while a session exists (see the Koin
+ * wiring), so a signed-out app does not knock on an endpoint it cannot enter.
  */
 class CoachingWsClient(
     private val url: String,
@@ -119,9 +137,25 @@ class CoachingWsClient(
                     callbacks.onFailure(t)
                     null
                 }
-                terminal.await()
+                val outcome = terminal.await()
                 socket = null
                 if (!running) break
+
+                // M11: the server accepted the socket and then closed it with a
+                // policy violation — a token that was revoked between the
+                // handshake and now. Reconnecting with the same credentials can
+                // only be refused again, so the loop stops here instead of
+                // hammering the endpoint on every backoff step. The channel
+                // reopens on the next foreground, by which point the REST path
+                // has refreshed the token — a refusal is self-healing, not a
+                // dead end. (A handshake refused BEFORE accept() never reaches
+                // this branch: it arrives as a failure and takes the bounded
+                // retry path below.)
+                if (outcome == TerminalOutcome.Refused) {
+                    running = false
+                    onStatusChanged(CoachingWsStatus.DISCONNECTED)
+                    break
+                }
 
                 val failures = attempts.incrementAndGet()
                 if (failures > maxReconnectAttempts) {
@@ -164,7 +198,12 @@ class CoachingWsClient(
         }
 
         override fun onClosed(code: Int, reason: String) {
-            terminal.complete(TerminalOutcome.Closed)
+            // M11: a policy-violation close is the server refusing our
+            // credentials, which is terminal — see runLoop.
+            terminal.complete(
+                if (code == WS_CLOSE_POLICY_VIOLATION) TerminalOutcome.Refused
+                else TerminalOutcome.Closed
+            )
         }
 
         override fun onFailure(cause: Throwable) {
@@ -172,7 +211,7 @@ class CoachingWsClient(
         }
     }
 
-    private enum class TerminalOutcome { Closed, Failed }
+    private enum class TerminalOutcome { Closed, Failed, Refused }
 
     private companion object {
         const val CLOSE_NORMAL = 1000
@@ -188,6 +227,14 @@ class CoachingWsClient(
  * socket degrades silently to the pull/offline path.
  */
 enum class CoachingWsStatus { IDLE, CONNECTING, CONNECTED, DISCONNECTED }
+
+/**
+ * M11 — the close code the backend uses to refuse an unauthenticated or
+ * invalid handshake (RFC 6455 policy violation). Mirrors
+ * `WS_CLOSE_POLICY_VIOLATION` in apps/api/app/modules/triggers/ws.py; the two
+ * must agree, and a test on each side pins it.
+ */
+internal const val WS_CLOSE_POLICY_VIOLATION = 1008
 
 /** Guard for the [CoachingWsClient] state (connect/disconnect idempotency). */
 private val stateLock = Any()

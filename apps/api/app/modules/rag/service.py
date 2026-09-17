@@ -165,6 +165,30 @@ def list_documents(db: Session) -> list[DocumentInfo]:
     ]
 
 
+def get_document_info(db: Session, document_id: uuid.UUID) -> Optional[DocumentInfo]:
+    """One document's listing row — the same shape ``list_documents`` returns.
+
+    Added for the M11 / F-18 ingestion endpoint: it needs to answer with the
+    document it just wrote (including its chunk count) without the router
+    reaching into RagChunk itself.
+    """
+    document = db.get(RagDocument, document_id)
+    if document is None:
+        return None
+    chunk_count = db.exec(
+        select(func.count(RagChunk.id)).where(RagChunk.document_id == document_id)
+    ).one()
+    return DocumentInfo(
+        id=document.id,
+        title=document.title,
+        source=document.source,
+        source_url=document.source_url,
+        chunk_count=chunk_count,
+        created_at=document.created_at,
+        updated_at=document.updated_at,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Retrieval
 # ─────────────────────────────────────────────────────────────────────────────

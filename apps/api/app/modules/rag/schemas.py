@@ -77,3 +77,35 @@ class DocumentInfo(BaseModel):
     chunk_count: int
     created_at: datetime
     updated_at: datetime
+
+
+class IngestionRequest(BaseModel):
+    """M11 / F-18 — one knowledge-base document to chunk and embed.
+
+    Mirrors ``service.ingest_document``'s named arguments. Validation is
+    deliberately shallow here (non-empty, sane lengths) because the service
+    already rejects empty content and enforces the embedding width; this
+    exists so a malformed request fails as a 422 at the edge instead of a 500.
+    """
+
+    title: str
+    source: str
+    content: str
+    source_url: Optional[str] = None
+    metadata: Optional[dict] = None
+
+    @field_validator("title", "source")
+    @classmethod
+    def _non_empty_identifier(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be empty or whitespace-only")
+        if len(value) > 512:
+            raise ValueError("must be at most 512 characters")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def _non_empty_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be empty or whitespace-only")
+        return value

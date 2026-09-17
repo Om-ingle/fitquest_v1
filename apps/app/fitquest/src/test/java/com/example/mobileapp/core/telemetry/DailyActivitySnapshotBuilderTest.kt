@@ -152,4 +152,75 @@ class DailyActivitySnapshotBuilderTest {
             DailyActivitySnapshotBuilder.localDateKey(start + 1000)
         )
     }
+
+    // ── M10 F-01: Home must equal the snapshot for any number of runs ───────
+
+    /**
+     * Regression test for the dashboard's today-steps figure. Home used to read
+     * `observeRecentSessions(limit = 3)` and only THEN filter to today, so on a
+     * day with four or more runs the day's earliest run was dropped from the
+     * number the user sees while the backend still received all of it.
+     */
+    @Test
+    fun `every run of the day counts, not just the three most recent`() {
+        val day = "2026-09-05"
+        val runs = listOf(
+            session(timestamp(day, 7), durationSeconds = 15 * 60, totalSteps = 1000),
+            session(timestamp(day, 12), durationSeconds = 15 * 60, totalSteps = 2000),
+            session(timestamp(day, 18), durationSeconds = 15 * 60, totalSteps = 3000),
+            session(timestamp(day, 21), durationSeconds = 15 * 60, totalSteps = 4000)
+        )
+        val now = timestamp(day, 23)
+        val expected = 1000 + 2000 + 3000 + 4000
+
+        assertEquals(expected, DailyActivitySnapshotBuilder.daySteps(runs, now))
+
+        // M10 exit criterion 1: the snapshot the backend receives carries the
+        // same figure, because both call this one function.
+        val snapshot = DailyActivitySnapshotBuilder.build(
+            sessions = runs,
+            goalSteps = 10_000,
+            hexesOwned = 5,
+            forTimestampMillis = now
+        )!!
+        assertEquals(expected, snapshot.steps)
+        assertTrue("10000 steps clears the goal", snapshot.goal_completed)
+
+        // The capped read the dashboard used to perform, for contrast — three
+        // of the four runs, i.e. 1000 user-visible steps that the backend saw.
+        val cappedRead = runs.sortedByDescending { it.endedAt }.take(3).sumOf { it.totalSteps }
+        assertEquals(9000, cappedRead)
+    }
+
+    /**
+     * Day membership follows the run's `startedAt`, matching both
+     * `RunSessionDao.getSessionsBetween` (`startedAt >= start AND startedAt <
+     * end`) and [DailyActivitySnapshotBuilder.build]. A run that begins before
+     * midnight belongs to the day it began, even though it ends after it.
+     */
+    @Test
+    fun `a run belongs to the day it started, not the day it ended`() {
+        val lateStart = timestamp("2026-09-05", 23, 50)
+        val afterMidnight = timestamp("2026-09-06", 0)
+        val runs = listOf(session(lateStart, durationSeconds = 20 * 60, totalSteps = 700))
+
+        assertEquals(700, DailyActivitySnapshotBuilder.daySteps(runs, lateStart))
+        assertEquals(0, DailyActivitySnapshotBuilder.daySteps(runs, afterMidnight))
+        assertEquals(0, DailyActivitySnapshotBuilder.daySteps(emptyList(), lateStart))
+    }
+
+    /**
+     * Sessions from other days must never leak into the day total — the caller
+     * may hand over an over-fetched list.
+     */
+    @Test
+    fun `other days in the session list are excluded from the day total`() {
+        val day = "2026-09-05"
+        val runs = listOf(
+            session(timestamp("2026-09-04", 10), durationSeconds = 60 * 60, totalSteps = 9999),
+            session(timestamp(day, 10), durationSeconds = 30 * 60, totalSteps = 1000),
+            session(timestamp("2026-09-06", 10), durationSeconds = 60 * 60, totalSteps = 8888)
+        )
+        assertEquals(1000, DailyActivitySnapshotBuilder.daySteps(runs, timestamp(day, 23)))
+    }
 }

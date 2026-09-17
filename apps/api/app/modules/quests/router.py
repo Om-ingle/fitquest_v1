@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session
 
-from app.api.dependencies import get_db
+from app.api.dependencies import get_db, require_admin, require_own_identity
 from app.modules.quests.schemas import (
     QuestCreate,
     QuestResponse,
@@ -24,8 +24,18 @@ router = APIRouter()
 
 
 @router.post("", response_model=QuestResponse, status_code=status.HTTP_201_CREATED)
-def create_quest_endpoint(payload: QuestCreate, db: Session = Depends(get_db)) -> QuestResponse:
-    """Create a new quest (admin only)."""
+def create_quest_endpoint(
+    payload: QuestCreate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+) -> QuestResponse:
+    """Create a new quest (admin only).
+
+    M11: the docstring always said "admin only" and nothing enforced it. It now
+    checks the ADMIN_USER_IDS allow-list — the same list that gates knowledge-
+    base ingestion. Applying it here is a deliberate extension of that decision;
+    creating quests is game content, so it belongs to operators, not players.
+    """
     quest = create_quest(db, payload)
     return QuestResponse.model_validate(quest)
 
@@ -48,9 +58,14 @@ def get_quest_endpoint(quest_id: uuid.UUID, db: Session = Depends(get_db)) -> Qu
 
 @router.get("/{user_id}/quests", response_model=list[UserQuestResponse])
 def get_user_quests_endpoint(
-    user_id: uuid.UUID, db: Session = Depends(get_db)
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_own_identity),
 ) -> list[UserQuestResponse]:
-    """Get all quests for a specific user."""
+    """Get all quests for a specific user.
+
+    M11: self-scoped — quest progress is private per-user data.
+    """
     user_quests = get_user_quests(db, user_id)
     return [UserQuestResponse.model_validate(uq) for uq in user_quests]
 
@@ -61,9 +76,15 @@ def get_user_quests_endpoint(
     status_code=status.HTTP_201_CREATED,
 )
 def enroll_user_quest_endpoint(
-    user_id: uuid.UUID, quest_id: uuid.UUID, db: Session = Depends(get_db)
+    user_id: uuid.UUID,
+    quest_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_own_identity),
 ) -> UserQuestResponse:
-    """Enroll a user in a quest."""
+    """Enroll a user in a quest.
+
+    M11: self-scoped — a caller may only enroll themselves.
+    """
     quest = get_quest_by_id(db, quest_id)
     if quest is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quest not found")
@@ -86,8 +107,13 @@ def update_user_quest_endpoint(
     quest_id: uuid.UUID,
     payload: UserQuestUpdate,
     db: Session = Depends(get_db),
+    current_user: dict = Depends(require_own_identity),
 ) -> UserQuestResponse:
-    """Update a user's quest progress."""
+    """Update a user's quest progress.
+
+    M11: self-scoped. This route writes progress counters, so leaving it open
+    would let any authenticated account complete another player's quests.
+    """
     user_quest = update_user_quest(db, user_id, quest_id, payload)
     if user_quest is None:
         raise HTTPException(

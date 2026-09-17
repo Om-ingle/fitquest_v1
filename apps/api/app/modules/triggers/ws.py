@@ -16,8 +16,29 @@ Role in the SRS §15/§16 architecture:
 The trigger engine REMAINS the only producer of triggers; this layer is a
 pure transport consumer. WebSocket is an ADDITIONAL real-time channel for
 coaching events (SRS §16) — it does not replace REST, does not touch
-``GET /api/v1/coach``, and never calls the LLM/RAG. Out of scope here: TTS,
-Android handling, Redis, and real authentication (dev identity is reused).
+``GET /api/v1/coach``, and never calls the LLM/RAG.
+
+Authentication (M11)
+--------------------
+The connection is authenticated from the HANDSHAKE's ``Authorization`` header,
+verified exactly like a REST request: ES256 signature against the project
+JWKS, plus ``exp`` / ``aud`` / ``iss`` / ``sub``. The resolved subject is
+matched to a user row, and the connection is registered under that row's
+INTERNAL id.
+
+Two earlier mechanisms are gone, both on purpose:
+
+* the ``?user_id=`` query parameter — a query string is the wrong carrier for
+  a credential. It lands in access logs, proxy logs and any intermediary that
+  records request lines, and it invites a client to name its own identity.
+  OkHttp's WebSocket builder sets headers on the upgrade request, so the
+  current stack does not need it.
+* the ``DEV_USER_ID`` fallback — an unauthenticated connection used to be
+  served as the dev user. A missing or invalid token now fails the handshake
+  (close 1008) instead. There is no "anonymous" coaching session.
+
+Closing before ``accept()`` makes the ASGI server reject the upgrade with an
+HTTP 403, so a client never reaches an accepted socket without a valid token.
 
 Threading model
 ---------------
@@ -44,13 +65,17 @@ import asyncio
 import json
 import logging
 import threading
-import uuid
 from collections import defaultdict
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlmodel import Session
 
-from app.api.dependencies import DEV_USER_ID
+from app.api.dependencies import bearer_token_from_headers
+from app.core.database import engine
+from app.core.jwks import JwksUnavailable
+from app.core.security import InvalidTokenError, decode_supabase_jwt
 from app.modules.triggers.engine import CoachingTrigger, trigger_engine
+from app.modules.users.service import resolve_or_provision_user
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +86,10 @@ ENVELOPE_TYPE = "coaching_trigger"
 # falls this far behind we start dropping rather than blocking the producer
 # or growing memory without bound.
 SESSION_QUEUE_SIZE = 256
+
+# RFC 6455 close codes used to refuse a handshake.
+WS_CLOSE_POLICY_VIOLATION = 1008  # no/invalid credentials — retrying as-is won't help
+WS_CLOSE_INTERNAL_ERROR = 1011  # keys unavailable — a valid token could not be checked
 
 
 def serialize_trigger(trigger: CoachingTrigger) -> str:
@@ -75,25 +104,42 @@ def serialize_trigger(trigger: CoachingTrigger) -> str:
     )
 
 
-def resolve_user_id(user_id: str | None) -> str:
-    """Dev-identity resolution, consistent with ``dependencies.get_current_user``.
+def authenticate_handshake(websocket: WebSocket) -> tuple[str | None, int | None]:
+    """Resolve the connecting user's INTERNAL id from the handshake token.
 
-    Missing -> the dev user (the same fixed identity every REST endpoint
-    uses). Present and a valid UUID -> that user, so a dev/test client can
-    observe per-user isolation without inventing an auth system. Anything else
-    is logged and falls back to the dev user — never an error, matching the
-    no-auth dev posture. Real auth replaces this wholesale in production (see
-    the TODO in app/api/dependencies.py); this is NOT a security boundary.
+    Returns ``(user_id, None)`` on success and ``(None, close_code)`` on
+    refusal — the caller closes the handshake with that code. Returning the
+    close code rather than raising keeps the endpoint's error handling in one
+    place and makes the refusal reason testable.
+
+    The token is verified with the same function REST uses
+    (``decode_supabase_jwt``): same algorithm pin, same JWKS, same
+    ``exp``/``aud``/``iss``/``sub`` requirements. There is no weaker WebSocket
+    path and no way for a client to name its own identity.
     """
-    if user_id:
-        try:
-            return str(uuid.UUID(user_id))
-        except ValueError:
-            logger.warning(
-                "coaching WS: ignoring non-UUID user_id %r; using dev user",
-                user_id,
-            )
-    return DEV_USER_ID
+    token = bearer_token_from_headers(websocket.headers)
+    if token is None:
+        return None, WS_CLOSE_POLICY_VIOLATION
+
+    try:
+        payload = decode_supabase_jwt(token)
+    except InvalidTokenError:
+        return None, WS_CLOSE_POLICY_VIOLATION
+    except JwksUnavailable:
+        # A valid token may simply be unverifiable right now; the client should
+        # retry rather than treat its credentials as bad.
+        logger.error("JWKS unavailable while verifying a coaching WS handshake")
+        return None, WS_CLOSE_INTERNAL_ERROR
+
+    subject = str(payload.get("sub") or "").strip()
+    if not subject:
+        return None, WS_CLOSE_POLICY_VIOLATION
+
+    # Provision on first connect, exactly like REST: a client may open the
+    # coaching channel before it has made any other authenticated call.
+    with Session(engine) as db:
+        user = resolve_or_provision_user(db, subject=subject, claims=payload)
+        return str(user.id), None
 
 
 class _Session:
@@ -312,11 +358,22 @@ router = APIRouter()
 
 
 @router.websocket("/coaching")
-async def coaching_ws(websocket: WebSocket, user_id: str | None = None) -> None:
+async def coaching_ws(websocket: WebSocket) -> None:
     """``/api/v1/ws/coaching`` — push channel for the connecting user's
     CoachingTrigger events. See docs/docs/coaching/0002-m82-websocket-transport.md.
+
+    The connection must carry a valid Supabase token in the handshake's
+    ``Authorization`` header; the session is registered under the token's user
+    and no other identity can be claimed (M11 — see the module docstring).
     """
-    identity = resolve_user_id(user_id)
+    identity, close_code = authenticate_handshake(websocket)
+    if identity is None:
+        # Refuse the upgrade. Closing before accept() makes the server reject
+        # the handshake with HTTP 403, so no socket is ever accepted without a
+        # verified token.
+        await websocket.close(code=close_code or WS_CLOSE_POLICY_VIOLATION)
+        return
+
     await websocket.accept()
     session = manager.register(identity, websocket)
     try:

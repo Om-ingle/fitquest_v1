@@ -24,10 +24,21 @@ class Friendship(SQLModel, table=True):
 class User(SQLModel, table=True):
     """Core User model with Profile stats, Streak logic, and Relationships."""
 
-    # CRITICAL: If using Supabase Auth, this ID should match Supabase's auth.users UUID
+    # CRITICAL: `id` is the INTERNAL key every domain table references
+    # (hexownership.king_id, runsession.user_id, userdailyactivity.user_id,
+    # friendship.*). It is never the external identity — see `auth_subject`.
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     username: str = Field(unique=True, index=True)
     avatar_url: Optional[str] = None
+
+    # M11 — the Supabase Auth identity this row belongs to: the `sub` claim of
+    # the verified JWT, i.e. `auth.users.id`. Kept deliberately separate from
+    # `id` so the two id spaces can never be confused: an external subject is
+    # matched to a row here, and everything downstream keeps using the internal
+    # UUID. NULL means "not linked to a login" — which is exactly the seeded
+    # development/test users, whose existing rows are never rewritten,
+    # reassigned, or mapped onto a real account.
+    auth_subject: Optional[str] = Field(default=None, unique=True, index=True)
 
     # --- PROFILE STATS ---
     total_lifetime_steps: int = Field(default=0)

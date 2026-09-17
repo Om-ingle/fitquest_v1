@@ -21,6 +21,7 @@ from app.modules.rag import service as rag_service
 from app.modules.rag.constants import EMBEDDING_DIMENSION
 from app.modules.recommendations.schemas import FitnessContext
 from app.modules.users.models import User
+from tests.authkit import ensure_user
 
 USER_ID = uuid.UUID(DEV_USER_ID)
 FIXTURE_CONTENT = "TEST FIXTURE — placeholder grounding knowledge. Not advice."
@@ -155,8 +156,9 @@ def test_api_response_and_prompt_never_contain_the_api_key(client, db, monkeypat
     sentinel = "AIza-sentinel-test-key-DO-NOT-PRINT"
     monkeypatch.setattr(settings, "gemini_api_key", sentinel)
     _seed_fixture_knowledge(db)
-    db.add(User(id=USER_ID, username="devuser", total_lifetime_steps=6000))
-    db.commit()
+    # M11 — the authenticated account's row already exists (conftest links it),
+    # so this updates its steps rather than inserting a colliding row.
+    ensure_user(USER_ID, "devuser", total_lifetime_steps=6000)
     llm = PromptRecordingLLM()
     _patch_providers(monkeypatch, llm)
 

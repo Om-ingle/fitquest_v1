@@ -35,6 +35,15 @@ val envProperties: Map<String, String> = run {
 
 fun String.cleanEnvValue(): String = trim().trim('"').trim('\'')
 
+/**
+ * Escapes a value for embedding in a generated `buildConfigField` String
+ * literal. A URL or key is arbitrary text from an env file, and an unescaped
+ * quote or backslash would produce Kotlin that does not compile — a confusing
+ * failure a long way from the .env line that caused it.
+ */
+fun String.asBuildConfigLiteral(): String =
+    replace("\\", "\\\\").replace("\"", "\\\"")
+
 fun envOrDefault(name: String, default: String = ""): String {
     val envValue = System.getenv(name)?.cleanEnvValue()
     if (!envValue.isNullOrEmpty()) return envValue
@@ -74,6 +83,24 @@ android {
         }
         buildConfigField("String", "MAPTILER_API_KEY", "\"$mapTilerApiKey\"")
         buildConfigField("String", "MAPTILER_STYLE_URL", "\"$mapTilerStyleUrl\"")
+
+        // M11 (F-04) — Supabase Auth, the app's identity provider. Both values
+        // are client-side by design: SUPABASE_URL is the project's public
+        // endpoint and the ANON key is Supabase's PUBLISHABLE key, which ships
+        // inside every Supabase client app and confers no authority on its own
+        // — it identifies the project, not the user.
+        //
+        // The SERVICE-ROLE key must never be placed here. It bypasses Row Level
+        // Security and would hand anyone who unzips the APK the entire database.
+        //
+        // Left empty by default: an unconfigured build compiles and runs, and
+        // sign-in reports "not configured" instead of crashing at startup. The
+        // values come from apps/app/.env (see .env.example) or the
+        // environment — never from source.
+        val supabaseUrl = envOrDefault("SUPABASE_URL")
+        val supabaseAnonKey = envOrDefault("SUPABASE_ANON_KEY")
+        buildConfigField("String", "SUPABASE_URL", "\"${supabaseUrl.asBuildConfigLiteral()}\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${supabaseAnonKey.asBuildConfigLiteral()}\"")
     }
 
     // Two backend flavors (same app logic, only the backend URL differs).
@@ -171,6 +198,11 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     testImplementation(libs.junit)
+    // M11: drives real HTTP and real WebSocket handshakes against a local
+    // server, so the auth interceptor, the 401 refresh-and-retry and the
+    // coaching handshake header are asserted on the wire rather than against a
+    // mock of our own code.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

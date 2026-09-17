@@ -17,6 +17,15 @@ import kotlinx.coroutines.launch
 
 data class HexCaptureSnapshot(
     val isTracking: Boolean = false,
+    /**
+     * Whether the live run is currently paused (F-02). While paused the engine
+     * still resolves the current hex so the map keeps showing where the user
+     * is, but it accrues nothing: no steps, no hex registration, no buffer
+     * drain. Holding the flag in the snapshot is what keeps the engine and the
+     * UI from ever disagreeing about it — `CaptureScreenModel` mirrors this
+     * field rather than tracking its own copy.
+     */
+    val isPaused: Boolean = false,
     val currentHexId: String? = null,
     val currentLocation: GeoPoint? = null,
     val sessionSteps: Int = 0,
@@ -37,9 +46,15 @@ data class HexCaptureSnapshot(
      * of being silently dropped (M9.2 P1-1). Deltas outside a run (the sensor
      * flow is only collected between start/stop tracking) are ignored, matching
      * the collector lifecycle and protecting against a late delta after stop.
+     *
+     * A paused run discards the delta outright (F-02): the sensor reports the
+     * delta per event, so nothing has to be reconciled later and resuming can
+     * never produce a catch-up jump. Critically, the delta is NOT banked into
+     * [sessionSteps] or [pendingStepsBeforeHex] for later removal — banking
+     * would break the exactly-once accounting invariant.
      */
     fun applyStepDelta(delta: Int): HexCaptureSnapshot {
-        if (!isTracking) return this
+        if (!isTracking || isPaused) return this
         val targetHex = currentHexId
         return if (targetHex != null) {
             val updated = hexesToSteps.toMutableMap()
@@ -59,6 +74,12 @@ data class HexCaptureSnapshot(
      * when buffered pre-hex steps exist and a hex has just become known, those
      * steps are attributed to that hex exactly once and the buffer is cleared —
      * they are never added to [sessionSteps] again (no double count).
+     *
+     * While paused the fix still updates the displayed position, current hex
+     * and nearby ring — the user must be able to see where they are — but it
+     * neither registers territory nor drains the buffer (F-02). Draining while
+     * paused would attribute buffered steps to a hex the user is standing still
+     * in, and registering would capture hexes the paused run never earned.
      */
     fun applyLocationUpdate(
         hexId: String?,
@@ -70,7 +91,7 @@ data class HexCaptureSnapshot(
             currentHexId = hexId,
             nearbyHexIds = nearby
         )
-        if (!isTracking || hexId == null) return updated
+        if (!isTracking || isPaused || hexId == null) return updated
 
         val hexMap = hexesToSteps.toMutableMap()
         if (!hexMap.containsKey(hexId)) {
@@ -101,11 +122,25 @@ class HexCaptureEngine(
     private var locationJob: Job? = null
     private var stepsJob: Job? = null
 
-    init {
-        startLocationMonitoring()
-    }
+    // Deliberately NO `init { startLocationMonitoring() }`: the engine must not
+    // arm a high-accuracy GPS subscription merely by being constructed (F-10).
+    // This is a Koin `single` injected by MainActivity for cold-start routing,
+    // so a construction-time arm turned on continuous location collection on
+    // every launch and — because nothing released it on the Home path — kept it
+    // running for the whole process lifetime with no run active. Arming is now
+    // strictly demand-driven: the capture screen arms it while visible, and
+    // startTracking() re-arms it for a run (which outlives the screen).
 
-    private fun startLocationMonitoring() {
+    /**
+     * Arms the location subscription. Idempotent — an existing subscription is
+     * cancelled first.
+     *
+     * Public because ownership is shared: the engine needs a live fix while a
+     * run is active, and the capture screen needs one while it is on-screen so
+     * the standby map can show the current hex. Whoever no longer needs it
+     * calls [stopLocationMonitoring] (F-10).
+     */
+    fun startLocationMonitoring() {
         locationJob?.cancel()
         locationJob = scope.launch {
             // First attempt to get the user's real last known location immediately
@@ -120,6 +155,31 @@ class HexCaptureEngine(
                 handleLocation(location.latitude, location.longitude)
             }
         }
+    }
+
+    /**
+     * Releases the location subscription.
+     *
+     * `observeLocations()` is a `callbackFlow` whose `awaitClose` removes the
+     * location updates, so cancelling this job is the only thing that actually
+     * stops high-accuracy GPS. Without it the subscription ran for the whole
+     * process lifetime — continuous location collection and battery drain with
+     * no run active (F-10).
+     */
+    fun stopLocationMonitoring() {
+        locationJob?.cancel()
+        locationJob = null
+    }
+
+    /**
+     * Records the run's paused state. Called by [CaptureScreenModel] alongside
+     * the controller's timing pause, so the pause that freezes the clock also
+     * freezes step, distance, calorie and territory accrual (F-02). Idempotent
+     * — [MutableStateFlow] conflates an unchanged value, so this never emits a
+     * spurious snapshot.
+     */
+    fun setPaused(paused: Boolean) {
+        _state.update { it.copy(isPaused = paused) }
     }
 
     private fun handleLocation(latitude: Double, longitude: Double) {
@@ -143,6 +203,7 @@ class HexCaptureEngine(
             val initialHexMap = it.currentHexId?.let { hexId -> mapOf(hexId to 0) } ?: emptyMap()
             it.copy(
                 isTracking = true,
+                isPaused = false,
                 sessionSteps = 0,
                 hexesToSteps = initialHexMap,
                 pendingStepsBeforeHex = 0
@@ -164,10 +225,15 @@ class HexCaptureEngine(
      * steps/territory captured before a process death are not lost. This is
      * intentionally separate from [startTracking], which begins a fresh run at
      * zero. A no-op if the engine is already tracking (live session wins).
+     *
+     * [isPaused] restores the checkpoint's pause state: a run that died while
+     * paused must come back paused, accruing nothing until the user resumes
+     * (M10 exit criterion 3).
      */
     fun resumeTracking(
         initialSessionSteps: Int,
-        initialHexesToSteps: Map<String, Int>
+        initialHexesToSteps: Map<String, Int>,
+        isPaused: Boolean = false
     ) {
         if (_state.value.isTracking) return
 
@@ -178,6 +244,7 @@ class HexCaptureEngine(
             }
             snapshot.copy(
                 isTracking = true,
+                isPaused = isPaused,
                 sessionSteps = initialSessionSteps.coerceAtLeast(0),
                 hexesToSteps = seeded,
                 // Pre-hex steps from before a process death are not part of any
@@ -203,11 +270,18 @@ class HexCaptureEngine(
         }
     }
 
+    /**
+     * Ends the run: stops step collection and releases the location
+     * subscription (F-10 — the subscription belongs to the run and must not
+     * outlive it), then merges the session's hex tallies into Room and clears
+     * the live counters.
+     */
     fun stopTracking() {
         if (!_state.value.isTracking) return
 
         stepsJob?.cancel()
         stepsJob = null
+        stopLocationMonitoring()
 
         val finishedSession = _state.value.hexesToSteps
         scope.launch {
@@ -219,6 +293,7 @@ class HexCaptureEngine(
         _state.update {
             it.copy(
                 isTracking = false,
+                isPaused = false,
                 sessionSteps = 0,
                 hexesToSteps = emptyMap(),
                 pendingStepsBeforeHex = 0

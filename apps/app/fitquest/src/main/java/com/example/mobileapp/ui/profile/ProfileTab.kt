@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cafe.adriel.voyager.navigator.tab.Tab
 import cafe.adriel.voyager.navigator.tab.TabOptions
+import com.example.mobileapp.core.auth.AuthSession
 import com.example.mobileapp.core.data.local.CapturedHexEntity
 import com.example.mobileapp.core.data.local.HexRepository
 import com.example.mobileapp.core.data.local.RunSessionRepository
@@ -81,6 +82,7 @@ object ProfileTab : Tab {
         val userProfileRepo = koinInject<UserProfileRepository>()
         val hexRepo = koinInject<HexRepository>()
         val runSessionRepo = koinInject<RunSessionRepository>()
+        val authSession = koinInject<AuthSession>()
         val coroutineScope = rememberCoroutineScope()
 
         val profileState by userProfileRepo.observeProfile().collectAsState(initial = null)
@@ -89,6 +91,7 @@ object ProfileTab : Tab {
         val sessionCount by runSessionRepo.observeSessionCount().collectAsState(initial = 0)
 
         var showEditProfileDialog by remember { mutableStateOf(false) }
+        var showSignOutDialog by remember { mutableStateOf(false) }
 
         LazyColumn(
             modifier = Modifier
@@ -135,9 +138,44 @@ object ProfileTab : Tab {
                 TerritoryVaultSection(hexes = capturedHexes)
             }
 
+            // M11 (F-04): the session lives here, so the way out of it does too.
+            item {
+                SignOutSection(onSignOutClick = { showSignOutDialog = true })
+            }
+
             item {
                 Spacer(modifier = Modifier.height(32.dp))
             }
+        }
+
+        if (showSignOutDialog) {
+            AlertDialog(
+                onDismissRequest = { showSignOutDialog = false },
+                title = { Text("Sign out?") },
+                text = {
+                    Text(
+                        "You'll need to sign in again to sync runs and defend " +
+                            "your territory. Your captured hexes stay on the server."
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showSignOutDialog = false
+                            // The screen change is not done here: MainActivity
+                            // observes the session and routes to login, which
+                            // also drops the authenticated WebSocket. One
+                            // transition, driven from one place.
+                            authSession.signOut()
+                        }
+                    ) {
+                        Text("Sign out")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showSignOutDialog = false }) { Text("Cancel") }
+                }
+            )
         }
 
         if (showEditProfileDialog) {
@@ -379,6 +417,24 @@ private fun TerritoryVaultSection(hexes: List<CapturedHexEntity>) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SignOutSection(onSignOutClick: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "Account",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = onSignOutClick,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Sign out")
         }
     }
 }

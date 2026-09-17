@@ -20,12 +20,15 @@ import androidx.lifecycle.lifecycleScope
 import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.Navigator
 import cafe.adriel.voyager.transitions.SlideTransition
+import com.example.mobileapp.core.auth.AuthSession
+import com.example.mobileapp.core.auth.AuthState
 import com.example.mobileapp.core.capture.HexCaptureEngine
 import com.example.mobileapp.core.data.local.ActiveRunRepository
 import com.example.mobileapp.core.data.local.UserProfileRepository
 import com.example.mobileapp.core.network.CoachForegroundCoordinator
 import com.example.mobileapp.core.network.CoachingWsClient
 import com.example.mobileapp.core.run.RunNotifications
+import com.example.mobileapp.ui.auth.LoginScreen
 import com.example.mobileapp.ui.auth.OnboardingScreen
 import com.example.mobileapp.ui.capture.CurrentRunScreen
 import com.example.mobileapp.ui.main.MainHubScreen
@@ -47,6 +50,10 @@ class MainActivity : ComponentActivity() {
     // navigation never duplicates it). Connect is initiated by the coordinator
     // above (before reconciliation); disconnect lives here on backgrounding.
     private val coachingWsClient: CoachingWsClient by inject()
+    // M11 (F-04): the process's single session. MainActivity asks it who the
+    // user is before deciding which screen to open, and watches it so a session
+    // that ends mid-use returns the user to the login screen.
+    private val authSession: AuthSession by inject()
 
     /** Live reference to the current Voyager [Navigator], for notification-tap deep links. */
     private var navigator: Navigator? = null
@@ -56,6 +63,7 @@ class MainActivity : ComponentActivity() {
         // Action carried by a launcher/notification start before the first composition.
         val initialAction = intent?.action
         enableEdgeToEdge()
+        observeAuthState()
         setContent {
             MobileAppTheme {
                 var startScreen by remember { mutableStateOf<Screen>(MainHubScreen()) }
@@ -76,6 +84,35 @@ class MainActivity : ComponentActivity() {
                         CircularProgressIndicator()
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * M11 (F-04) — keep the transport and the navigation in step with the
+     * session.
+     *
+     * A session can end while the app is open (the refresh token is revoked, or
+     * a refresh is explicitly rejected), and both of the things that depend on
+     * it must follow:
+     *
+     *  1. the coaching WebSocket is authenticated as that user, so it must not
+     *     outlive the session — leaving it open would keep a channel the user
+     *     can no longer legitimately hold; and
+     *  2. the UI must return to the login screen rather than sit on tabs whose
+     *     every request now answers 401.
+     *
+     * Collected for the activity's lifetime: StateFlow replays its current value
+     * on subscription, which also covers a session that was already gone before
+     * the first composition.
+     */
+    private fun observeAuthState() {
+        lifecycleScope.launch {
+            authSession.state.collect { state ->
+                if (state !is AuthState.SignedOut) return@collect
+                coachingWsClient.disconnect()
+                val nav = navigator ?: return@collect
+                if (nav.lastItem !is LoginScreen) nav.replaceAll(LoginScreen())
             }
         }
     }
@@ -105,12 +142,20 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Cold-start routing. An unfinished run (either a live in-process engine or
-     * a persisted checkpoint from a process death) is surfaced directly on the
-     * run screen so it is recovered instead of silently lost. Completed runs
-     * keep their normal Room -> RunSyncer path through MainHubScreen.
+     * Cold-start routing. Identity is resolved FIRST (M11): every route below
+     * requires a verified token, so there is no app to open without a session.
+     * [AuthSession.restore] reuses the stored session and refreshes it only if
+     * the access token has actually expired, so a returning user goes straight
+     * to the hub without a round trip in the common case.
+     *
+     * Then: an unfinished run (either a live in-process engine or a persisted
+     * checkpoint from a process death) is surfaced directly on the run screen so
+     * it is recovered instead of silently lost. Completed runs keep their normal
+     * Room -> RunSyncer path through MainHubScreen.
      */
     private suspend fun resolveStartScreen(initialAction: String?): Screen {
+        if (!authSession.restore()) return LoginScreen()
+
         val profile = userProfileRepository.getProfile()
         if (!profile.isOnboardingCompleted) return OnboardingScreen()
 

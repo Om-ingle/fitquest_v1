@@ -58,7 +58,18 @@ def db():
 
 
 def _seed_user(session, steps=5000):
-    session.add(User(id=USER_ID, username="devuser", total_lifetime_steps=steps))
+    """Give the authenticated dev account its lifetime steps.
+
+    M11 — the row already exists by the time a request is served (conftest
+    links the seeded account so requests can authenticate at all), so this
+    updates it. Inserting would collide on the primary key and, worse, leave
+    the real row unseeded.
+    """
+    user = session.get(User, USER_ID)
+    if user is None:
+        user = User(id=USER_ID, username="devuser")
+        session.add(user)
+    user.total_lifetime_steps = steps
     session.commit()
 
 

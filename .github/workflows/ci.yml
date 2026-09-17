@@ -1,0 +1,118 @@
+# FitQuest — continuous integration (M11, item 8).
+#
+# WHAT THIS IS: a build-and-test gate only. It installs dependencies, runs the
+# two test suites, and reports. It deliberately does NOT deploy, apply database
+# migrations, publish artifacts, or touch any environment beyond the runner:
+# deployment and migration are the project owner's manual steps.
+#
+# WHAT IT NEEDS: nothing. There are no repository secrets to configure and none
+# are referenced below. Both suites are hermetic by construction:
+#
+#   * The API tests run against a throwaway local SQLite file and a JWKS
+#     document installed by a fixture. Authentication is REAL in them (real
+#     ES256 signatures, real claim checks, real identity resolution) — the only
+#     thing patched is the JWKS *fetch*, so no test calls Supabase or any other
+#     network service. tests/conftest.py forces ENVIRONMENT=test and a dummy
+#     SUPABASE_URL itself; the workflow must not supply real ones.
+#   * The Android tests drive MockWebServer on the loopback interface. No test
+#     reaches the deployed backend. The build's SUPABASE_URL / SUPABASE_ANON_KEY
+#     are left unset, which is a supported configuration: the app compiles and
+#     reports "not configured" at sign-in instead of failing at startup.
+#
+# SECRETS: never add any here. A value written into this file is public to
+# everyone who can read the repository, and the Supabase SERVICE-ROLE key in
+# particular must never appear in the app, the workflow, or the repository.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: this workflow only reads the repository.
+permissions:
+  contents: read
+
+# A new push to the same branch makes the previous run's answer irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API tests (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: apps/api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            apps/api/requirements.txt
+            apps/api/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Both files, so CI installs the same set a developer does. (xgboost
+          # in requirements-dev.txt is used only by tools/synthetic_fitness,
+          # which pytest.ini's testpaths excludes — it is installed anyway so
+          # this job cannot pass against a dependency set nobody actually uses.)
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run the suite
+        # Bare `pytest` is exactly what pytest.ini was added to support
+        # (pythonpath = ., testpaths = tests), so it runs the same way from the
+        # repository root or from apps/api.
+        run: python -m pytest -q
+
+  android:
+    name: Android unit tests (JVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: apps/app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # AGP 8.13 requires JDK 17+; the project targets Java 11 bytecode.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The Android SDK comes from the runner image; AGP downloads any missing
+      # platform/build-tools component itself (licences are pre-accepted there).
+      # local.properties is intentionally NOT used — it is gitignored because it
+      # holds a developer's absolute sdk.dir. ANDROID_HOME/ANDROID_SDK_ROOT is
+      # what AGP reads here.
+      #
+      # Both debug flavors, because they differ in the constants compiled into
+      # BuildConfig (BACKEND_BASE_URL) and a flavor-specific wiring mistake would
+      # otherwise reach only the flavor nobody tests.
+      - name: Unit tests
+        run: ./gradlew :app:testLocalDebugUnitTest :app:testRailwayDebugUnitTest --console=plain
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-reports
+          path: apps/app/fitquest/build/reports/tests/
+          retention-days: 7

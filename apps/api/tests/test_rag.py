@@ -395,12 +395,59 @@ def test_documents_endpoint_lists_ingested_documents(client):
     assert documents[0]["chunk_count"] == len(chunk_text(FIXTURE_DOC))
 
 
-def test_there_is_no_public_ingestion_endpoint(client):
-    # Ingestion is service-level only while auth is deferred (4C.1 scope).
-    response = client.post(
-        "/api/v1/rag/documents", json={"title": "x", "content": "y"}
+def test_ingestion_endpoint_requires_authentication_and_admin(anon_client, client):
+    """F-18 — the ingestion route is closed to everyone but an allow-listed admin.
+
+    Two separate refusals, which is the point: authentication establishes WHO
+    you are, the allow-list decides whether that is enough. A signed-in user is
+    not automatically able to write to the shared knowledge base.
+    """
+    payload = {"title": "x", "source": "y", "content": "z"}
+
+    # No token at all → 401 from the router-level auth dependency.
+    assert anon_client.post("/api/v1/rag/documents", json=payload).status_code == 401
+    # A valid token, but the account is not on ADMIN_USER_IDS → 403.
+    assert client.post("/api/v1/rag/documents", json=payload).status_code == 403
+
+
+def test_admin_can_ingest_through_the_endpoint(admin, client, monkeypatch):
+    """The allow-listed caller ingests for real (F-18).
+
+    The provider is faked — no external AI call — so this exercises the route,
+    the service and the read-back without leaving the machine.
+    """
+    from app.modules.rag import router as rag_router
+
+    monkeypatch.setattr(
+        rag_router, "get_embedding_provider", lambda: FixtureEmbeddingProvider()
     )
-    assert response.status_code == 405  # only GET exists on /documents
+
+    response = client.post(
+        "/api/v1/rag/documents",
+        json={
+            "title": "Fixture doc",
+            "source": "fitquest-test-fixtures",
+            "content": FIXTURE_DOC,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["title"] == "Fixture doc"
+    assert body["chunk_count"] == len(chunk_text(FIXTURE_DOC))
+    # It really landed: the listing endpoint sees it.
+    assert [d["title"] for d in client.get("/api/v1/rag/documents").json()] == [
+        "Fixture doc"
+    ]
+
+
+def test_ingestion_rejects_an_empty_document(admin, client):
+    """A blank title/source/content is a 422, checked before any provider call."""
+    response = client.post(
+        "/api/v1/rag/documents",
+        json={"title": "  ", "source": "y", "content": "z"},
+    )
+    assert response.status_code == 422
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -409,9 +456,20 @@ def test_there_is_no_public_ingestion_endpoint(client):
 
 
 def test_rag_migration_applies_and_reverts_cleanly(tmp_path):
-    """alembic upgrade head on a fresh DB creates the RAG tables (SQLite
-    path — the pgvector extension/HNSW steps are PostgreSQL-only and are
-    skipped); downgrade -1 removes exactly them."""
+    """The RAG migration's up and down are clean, pinned by REVISION.
+
+    M11 — both ends are explicit revisions rather than ``head``/``-1``.
+    ``-1`` counts backwards from whatever is currently on top, so adding 0004
+    above the RAG revision silently turned the revert into "undo 0004" and the
+    assertions below started describing the wrong tables. Pinning the ends
+    keeps this test about the RAG migration no matter what is stacked above it.
+
+    SQLite path only — the pgvector extension/HNSW steps are PostgreSQL-only
+    and are skipped.
+    """
+    RAG_REVISION = "0003"  # creates ragdocument + ragchunk
+    RAG_PARENT = "0002"  # the revision immediately below it
+
     db_url = f"sqlite:///{(tmp_path / 'rag_migration_check.db').as_posix()}"
     env = {**os.environ, "DATABASE_URL": db_url}
 
@@ -425,6 +483,8 @@ def test_rag_migration_applies_and_reverts_cleanly(tmp_path):
             timeout=120,
         )
 
+    # Reach HEAD, not just the RAG revision: proves the migration applies on
+    # the path a real deployment takes, with 0004 stacked on top of it.
     upgrade = run_alembic("upgrade", "head")
     assert upgrade.returncode == 0, upgrade.stderr
 
@@ -456,13 +516,16 @@ def test_rag_migration_applies_and_reverts_cleanly(tmp_path):
     finally:
         inspection_engine.dispose()
 
-    downgrade = run_alembic("downgrade", "-1")
+    # Revert to the revision BELOW the RAG migration — an explicit target, so
+    # this removes the RAG tables whether or not anything sits above them.
+    downgrade = run_alembic("downgrade", RAG_PARENT)
     assert downgrade.returncode == 0, downgrade.stderr
     check_engine = create_engine(db_url)
     try:
-        assert "ragchunk" not in set(inspect(check_engine).get_table_names())
-        assert "ragdocument" not in set(inspect(check_engine).get_table_names())
+        remaining = set(inspect(check_engine).get_table_names())
+        assert "ragchunk" not in remaining
+        assert "ragdocument" not in remaining
         # The 4B.5 telemetry table is untouched by the RAG downgrade.
-        assert "userdailyactivity" in set(inspect(check_engine).get_table_names())
+        assert "userdailyactivity" in remaining
     finally:
         check_engine.dispose()

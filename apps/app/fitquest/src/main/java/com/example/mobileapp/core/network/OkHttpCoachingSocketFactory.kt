@@ -66,9 +66,18 @@ class OkHttpCoachingSocketFactory(
  * purely to parse/validate the base URL and the ws/wss string is assembled by
  * hand rather than through a scheme-changing builder.
  *
- * No `?user_id` is sent: the backend resolves a missing identity to the same
- * fixed dev user every REST call already acts as, exactly mirroring the
- * app's no-auth dev identity.
+ * M11 (F-04): the handshake is authenticated by the SAME bearer token every
+ * REST call carries, attached by the shared `AuthInterceptor` on the OkHttp
+ * client this factory is given. The token travels in the `Authorization`
+ * header and never in the query string, where it would be captured by access
+ * logs, proxies and crash reports. Because the interceptor reads the token at
+ * call time, a reconnect after a refresh automatically presents the new one.
+ *
+ * No `?user_id` is sent, and none would be honoured: the backend derives
+ * identity from the verified token and ignores anything the client claims
+ * about who it is. An unauthenticated connection is refused before `accept()`,
+ * so the failure the caller sees is the rejected upgrade
+ * ([WebSocketListener.onFailure]) rather than an accepted-then-closed socket.
  */
 fun coachingWsUrl(baseUrl: String): String {
     val httpUrl = baseUrl.toHttpUrl() // validates http(s) base + normalizes host

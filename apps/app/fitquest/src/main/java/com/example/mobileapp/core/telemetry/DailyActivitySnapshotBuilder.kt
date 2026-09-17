@@ -47,6 +47,26 @@ object DailyActivitySnapshotBuilder {
     }
 
     /**
+     * Day-to-date step total for the device-local day containing
+     * [forTimestampMillis], over [sessions].
+     *
+     * This is THE definition of "today's steps" (F-01). The Home dashboard and
+     * [build] both call it, so the number the user reads on Home is the same
+     * number the run-sync payload sends to the backend — they cannot drift.
+     * Day membership is decided by [localDateKey] of the session's `startedAt`,
+     * matching the `startedAt >= start AND startedAt < end` window the sync path
+     * narrows with, so a run that starts at 23:50 belongs to the day it began.
+     *
+     * What it does NOT count: steps the phone recorded outside a run. FitQuest
+     * has no ambient step source, so this is strictly "steps recorded during
+     * runs saved on that day". Any UI showing it must say so.
+     */
+    fun daySteps(sessions: List<RunSessionEntity>, forTimestampMillis: Long): Int {
+        val dateKey = localDateKey(forTimestampMillis)
+        return sessions.filter { localDateKey(it.startedAt) == dateKey }.sumOf { it.totalSteps }
+    }
+
+    /**
      * @param sessions all run sessions in the day's window (the caller may
      *   over-fetch; sessions from other local dates are filtered out here).
      * @param goalSteps the user's daily step goal (user_profile.dailyStepGoal).
@@ -64,7 +84,9 @@ object DailyActivitySnapshotBuilder {
         val daySessions = sessions.filter { localDateKey(it.startedAt) == dateKey }
         if (daySessions.isEmpty()) return null
 
-        val steps = daySessions.sumOf { it.totalSteps }
+        // Deliberately reuses the shared definition rather than repeating the
+        // sum, so the snapshot and Home are the same arithmetic (F-01).
+        val steps = daySteps(sessions, forTimestampMillis)
         val activeMinutes = (daySessions.sumOf { it.durationSeconds } / 60.0).roundToInt()
 
         return DailyActivitySnapshot(

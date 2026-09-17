@@ -1,7 +1,12 @@
 """Shared-map viewport: bbox filtering, zoom behavior, edge cases."""
+import uuid as uuid_mod
+
 import h3
+from sqlmodel import Session
 
 from app.api.dependencies import DEV_USER_ID
+from app.core.database import engine
+from app.modules.map.service import create_hex
 
 # Real res-10 H3 cells around a fixed location (Nagpur test area).
 CENTER = (21.1009, 78.9785)
@@ -18,16 +23,31 @@ def _create_user(client, username):
     return response.json()
 
 
-def _create_hex(client, king_id, hex_id, defense=10):
+def _seed_hex(king_id, hex_id, defense=10):
+    """Give another player territory via the service layer, not the API.
+
+    M11: `POST /api/v1/map` refuses to claim territory for anyone but the
+    authenticated caller, so it can no longer be used to fabricate a hex owned
+    by someone else. That is the correct behaviour — in the real system another
+    player's territory arrives through run sync — so these fixtures seed the
+    row directly rather than asking the API to do something it now forbids.
+    """
+    with Session(engine) as db:
+        create_hex(db, hex_id, uuid_mod.UUID(str(king_id)), defense)
+
+
+def _claim_own_hex(client, hex_id, defense=10):
+    """The API path a real client uses: claim a hex for the caller's account."""
     response = client.post(
         "/api/v1/map",
         json={
             "hex_id": hex_id,
-            "king_id": king_id,
+            "king_id": DEV_USER_ID,
             "defense_score_steps": defense,
         },
     )
     assert response.status_code == 201, response.text
+    return response.json()
 
 
 def _viewport(client, min_lat, min_lng, max_lat, max_lng, zoom=16.0):
@@ -47,7 +67,7 @@ def _viewport(client, min_lat, min_lng, max_lat, max_lng, zoom=16.0):
 
 def test_hex_inside_bbox_is_returned(client):
     owner = _create_user(client, "owner")
-    _create_hex(client, owner["id"], CELL_CENTER)
+    _seed_hex(owner["id"], CELL_CENTER)
 
     body = _viewport(
         client,
@@ -66,7 +86,7 @@ def test_hex_inside_bbox_is_returned(client):
 
 def test_hex_outside_bbox_is_excluded(client):
     owner = _create_user(client, "owner")
-    _create_hex(client, owner["id"], CELL_NORTH)
+    _seed_hex(owner["id"], CELL_NORTH)
 
     # Tight bbox around CENTER, far from the ~1km-away northern hex.
     body = _viewport(
@@ -81,9 +101,9 @@ def test_hex_outside_bbox_is_excluded(client):
 
 def test_multiple_owned_hexes_filtered_by_bbox(client):
     owner = _create_user(client, "owner")
-    _create_hex(client, owner["id"], CELL_CENTER)
-    _create_hex(client, owner["id"], CELL_NORTH)
-    _create_hex(client, owner["id"], CELL_EAST)
+    _seed_hex(owner["id"], CELL_CENTER)
+    _seed_hex(owner["id"], CELL_NORTH)
+    _seed_hex(owner["id"], CELL_EAST)
 
     # Wide bbox (~2km) contains everything.
     body = _viewport(
@@ -112,8 +132,7 @@ def test_multiple_owned_hexes_filtered_by_bbox(client):
 
 def test_hex_center_just_outside_bbox_is_included_via_padding(client):
     """A hex whose boundary clips the viewport must still be returned."""
-    owner = _create_user(client, "owner")
-    _create_hex(client, owner["id"], CELL_CENTER)
+    _claim_own_hex(client, CELL_CENTER)
     center_lat, center_lng = h3.cell_to_latlng(CELL_CENTER)
 
     # Bbox northern edge sits just south of the hex center — the cell
@@ -129,17 +148,13 @@ def test_hex_center_just_outside_bbox_is_included_via_padding(client):
 
 
 def test_is_owned_by_me_for_current_user(client):
-    import uuid as uuid_mod
+    """`is_owned_by_me` is decided by the TOKEN, not by anything the client sent.
 
-    from sqlmodel import Session
-
-    from app.core.database import engine
-    from app.modules.users.models import User
-
-    with Session(engine) as db:
-        db.add(User(id=uuid_mod.UUID(DEV_USER_ID), username="devuser"))
-        db.commit()
-    _create_hex(client, DEV_USER_ID, CELL_CENTER)
+    The dev user row is created by the auth fixtures (linked to its subject, as
+    seed.py leaves it), so this test no longer inserts one itself — a second
+    insert would collide with the primary key.
+    """
+    _claim_own_hex(client, CELL_CENTER)
 
     body = _viewport(
         client,
@@ -152,8 +167,7 @@ def test_is_owned_by_me_for_current_user(client):
 
 
 def test_zoom_below_14_returns_aggregated_placeholder(client):
-    owner = _create_user(client, "owner")
-    _create_hex(client, owner["id"], CELL_CENTER)
+    _claim_own_hex(client, CELL_CENTER)
 
     body = _viewport(
         client,
@@ -169,8 +183,7 @@ def test_zoom_below_14_returns_aggregated_placeholder(client):
 
 
 def test_zoom_boundary_at_14_returns_detail(client):
-    owner = _create_user(client, "owner")
-    _create_hex(client, owner["id"], CELL_CENTER)
+    _claim_own_hex(client, CELL_CENTER)
 
     body = _viewport(
         client,
@@ -185,7 +198,6 @@ def test_zoom_boundary_at_14_returns_detail(client):
 
 
 def test_empty_viewport_returns_no_hexes(client):
-    _create_user(client, "owner")
     # No hexes exist at all.
     body = _viewport(
         client,
@@ -215,10 +227,11 @@ def test_invalid_bbox_rejected(client):
 def test_get_hex_by_id_still_works(client):
     """Regression: the single-hex lookup endpoint is unchanged."""
     owner = _create_user(client, "owner")
-    _create_hex(client, owner["id"], CELL_CENTER, defense=42)
+    _seed_hex(owner["id"], CELL_CENTER, defense=42)
 
     response = client.get(f"/api/v1/map/{CELL_CENTER}")
     assert response.status_code == 200
     body = response.json()
     assert body["king_id"] == owner["id"]
     assert body["defense_score_steps"] == 42
+

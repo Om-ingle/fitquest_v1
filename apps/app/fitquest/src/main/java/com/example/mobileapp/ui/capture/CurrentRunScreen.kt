@@ -180,10 +180,18 @@ class CurrentRunScreen : Screen {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (state.isTracking) "ACTIVE RUN" else "STANDBY",
+                        text = when {
+                            state.isPaused -> "PAUSED"
+                            state.isTracking -> "ACTIVE RUN"
+                            else -> "STANDBY"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        color = if (state.isTracking) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                        color = when {
+                            state.isPaused -> MaterialTheme.colorScheme.error
+                            state.isTracking -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.outline
+                        }
                     )
                     Text(
                         text = formatDuration(state.durationSeconds),
