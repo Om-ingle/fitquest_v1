@@ -24,6 +24,8 @@ import uuid
 import pytest
 
 from app.api.dependencies import DEV_USER_ID
+from app.modules.coach import router as coach_router
+from app.modules.rag.constants import EMBEDDING_DIMENSION
 from tests.authkit import link_identity, user_row
 from tests.conftest import OTHER_USER_ID
 
@@ -196,10 +198,30 @@ def test_recommendations_use_the_callers_own_context(client, other):
     assert theirs["user_id"] == OTHER_USER_ID
 
 
-def test_coach_reports_the_callers_own_user_id(client, other):
+def test_coach_reports_the_callers_own_user_id(client, other, monkeypatch):
     """The coaching context is built from the token's identity, not a parameter."""
-    mine = client.get("/api/v1/coach").json()
-    theirs = client.get("/api/v1/coach", headers=other).json()
+    class FakeEmbeddingProvider:
+        dimension = EMBEDDING_DIMENSION
+
+        def embed_texts(self, texts):
+            vector = [0.0] * EMBEDDING_DIMENSION
+            vector[0] = 1.0
+            return [vector for _ in texts]
+
+    class FakeLLM:
+        def generate(self, prompt):
+            return "Keep going."
+
+    monkeypatch.setattr(coach_router, "get_embedding_provider", FakeEmbeddingProvider)
+    monkeypatch.setattr(coach_router, "get_llm_provider", FakeLLM)
+
+    mine_response = client.get("/api/v1/coach")
+    theirs_response = client.get("/api/v1/coach", headers=other)
+    assert mine_response.status_code == 200, mine_response.text
+    assert theirs_response.status_code == 200, theirs_response.text
+
+    mine = mine_response.json()
+    theirs = theirs_response.json()
 
     assert mine["context"]["user_id"] == DEV_USER_ID
     assert theirs["context"]["user_id"] == OTHER_USER_ID
